@@ -400,24 +400,37 @@ def anomalies():
                                 {% else %}
                                 <span class="badge badge-reviewed">待调查</span>
                                 {% endif %}
+                                {% if a.review_summary and a.review_summary.review_count > 1 %}
+                                <span class="badge bg-info ms-1">{{ a.review_summary.review_count }}次</span>
+                                {% endif %}
                             {% else %}
                             <span class="badge badge-pending">待复核</span>
                             {% endif %}
                         </td>
                         <td>
-                            <button class="btn btn-sm btn-info" onclick="showDetail({{ a.id }})">
+                            <button class="btn btn-sm btn-info" onclick="showDetail({{ a.id }})" title="查看详情">
                                 <i class="bi bi-eye"></i>
                             </button>
                             {% if not a.is_reviewed %}
-                            <button class="btn btn-sm btn-success" onclick="reviewAnomaly({{ a.id }}, 'valid')">
+                            <button class="btn btn-sm btn-success" onclick="reviewAnomaly({{ a.id }}, 'valid')" title="确认有效">
                                 <i class="bi bi-check"></i>
                             </button>
-                            <button class="btn btn-sm btn-warning" onclick="reviewAnomaly({{ a.id }}, 'false_positive')">
+                            <button class="btn btn-sm btn-warning" onclick="reviewAnomaly({{ a.id }}, 'false_positive')" title="标记误报">
                                 <i class="bi bi-x"></i>
+                            </button>
+                            {% else %}
+                            <button class="btn btn-sm btn-secondary" onclick="updateStatus({{ a.id }})" title="修改状态">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            <button class="btn btn-sm btn-primary" onclick="appendComment({{ a.id }})" title="追加备注">
+                                <i class="bi bi-chat-dots"></i>
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger" onclick="undoReview({{ a.id }})" title="撤销最近复核">
+                                <i class="bi bi-arrow-undo"></i>
                             </button>
                             {% endif %}
                             {% if not a.is_rolled_back %}
-                            <button class="btn btn-sm btn-danger" onclick="rollbackAnomaly({{ a.id }})">
+                            <button class="btn btn-sm btn-danger" onclick="rollbackAnomaly({{ a.id }})" title="回滚异常">
                                 <i class="bi bi-arrow-counterclockwise"></i>
                             </button>
                             {% endif %}
@@ -431,15 +444,97 @@ def anomalies():
                                 <p><strong>扩展数据：</strong></p>
                                 <div class="extra-data">{{ a.extra_data|tojson(indent=2) }}</div>
                                 {% endif %}
-                                {% if a.is_reviewed %}
-                                <p class="mt-3"><strong>复核信息：</strong></p>
-                                <ul>
-                                    <li>结果：{{ a.review_result }}</li>
-                                    <li>是否误报：{{ '是' if a.is_false_positive else '否' }}</li>
-                                    {% if a.review_comment %}<li>备注：{{ a.review_comment }}</li>{% endif %}
-                                    <li>复核人：{{ a.reviewed_by }}</li>
-                                    <li>复核时间：{{ a.reviewed_at[:19] if a.reviewed_at else '-' }}</li>
-                                </ul>
+
+                                {% if a.review_summary %}
+                                <div class="card mt-3">
+                                    <div class="card-header d-flex justify-content-between align-items-center">
+                                        <span><i class="bi bi-clock-history"></i> 复核摘要</span>
+                                        <span class="badge bg-secondary">
+                                            共 {{ a.review_summary.review_count }} 次操作, 撤销 {{ a.review_summary.undo_count }} 次
+                                        </span>
+                                    </div>
+                                    <div class="card-body">
+                                        {% if a.review_summary.last_review_at %}
+                                        <p class="mb-1">
+                                            <strong>最近复核：</strong>
+                                            {{ a.review_summary.last_review_by }} 于
+                                            {{ a.review_summary.last_review_at[:19] }}
+                                            标记为
+                                            {% if a.review_summary.last_review_result == 'valid' %}
+                                            <span class="badge badge-reviewed">有效</span>
+                                            {% elif a.review_summary.last_review_result == 'false_positive' %}
+                                            <span class="badge badge-false">误报</span>
+                                            {% elif a.review_summary.last_review_result == 'needs_investigation' %}
+                                            <span class="badge bg-info">待调查</span>
+                                            {% endif %}
+                                        </p>
+                                        {% endif %}
+                                        {% if a.review_summary.all_comments %}
+                                        <p class="mb-0"><strong>历史备注：</strong></p>
+                                        <ul class="mb-0">
+                                            {% for comment in a.review_summary.all_comments %}
+                                            <li>{{ comment }}</li>
+                                            {% endfor %}
+                                        </ul>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                {% if a.review_history %}
+                                <div class="card mt-3">
+                                    <div class="card-header">
+                                        <i class="bi bi-list-ul"></i> 复核时间线
+                                    </div>
+                                    <div class="card-body p-0">
+                                        <div class="list-group list-group-flush">
+                                            {% for h in a.review_history %}
+                                            <div class="list-group-item {% if h.is_undone %}list-group-item-light text-muted{% endif %}">
+                                                <div class="d-flex w-100 justify-content-between">
+                                                    <h6 class="mb-1">
+                                                        {% if h.is_undone %}
+                                                        <del>
+                                                        {% endif %}
+                                                        <span class="badge
+                                                            {% if h.action_type == 'review' %}bg-success
+                                                            {% elif h.action_type == 'update_status' %}bg-info
+                                                            {% elif h.action_type == 'append_comment' %}bg-warning text-dark
+                                                            {% elif h.action_type == 'undo' %}bg-secondary{% endif %}
+                                                            me-2">
+                                                            {{ h.action_type_name }}
+                                                        </span>
+                                                        {% if h.review_result_name %}
+                                                        <span class="badge
+                                                            {% if h.review_result == 'valid' %}bg-success
+                                                            {% elif h.review_result == 'false_positive' %}bg-warning text-dark
+                                                            {% elif h.review_result == 'needs_investigation' %}bg-info{% endif %}">
+                                                            {{ h.review_result_name }}
+                                                        </span>
+                                                        {% endif %}
+                                                        {% if h.is_undone %}
+                                                        </del>
+                                                        <span class="badge bg-danger ms-2">已撤销</span>
+                                                        {% endif %}
+                                                    </h6>
+                                                    <small>{{ h.reviewed_at[:19] if h.reviewed_at else '-' }}</small>
+                                                </div>
+                                                <p class="mb-1">操作人：{{ h.reviewed_by }}</p>
+                                                {% if h.review_comment %}
+                                                <p class="mb-1">
+                                                    <i class="bi bi-chat-text"></i> {{ h.review_comment }}
+                                                </p>
+                                                {% endif %}
+                                                {% if h.is_undone %}
+                                                <small class="text-muted">
+                                                    于 {{ h.undone_at[:19] if h.undone_at else '-' }} 由 {{ h.undone_by }} 撤销
+                                                    {% if h.undo_reason %}，原因：{{ h.undo_reason }}{% endif %}
+                                                </small>
+                                                {% endif %}
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
                                 {% endif %}
                             </div>
                         </td>
@@ -512,6 +607,90 @@ def anomalies():
         </div>
     </div>
 </div>
+
+<div class="modal fade" id="updateStatusModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">修改处置状态</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="post" action="{{ url_for('update_review_status_action') }}">
+                <div class="modal-body">
+                    <input type="hidden" name="anomaly_id" id="updateStatusAnomalyId">
+                    <div class="mb-3">
+                        <label class="form-label">新状态</label>
+                        <select class="form-select" name="new_status" required>
+                            <option value="valid">确认有效</option>
+                            <option value="false_positive">误报</option>
+                            <option value="needs_investigation">待调查</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">修改说明（可选）</label>
+                        <textarea class="form-control" name="comment" rows="2"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">确认修改</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="appendCommentModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">追加备注</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="post" action="{{ url_for('append_comment_action') }}">
+                <div class="modal-body">
+                    <input type="hidden" name="anomaly_id" id="appendCommentAnomalyId">
+                    <div class="mb-3">
+                        <label class="form-label">备注内容</label>
+                        <textarea class="form-control" name="comment" rows="3" required></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">确认追加</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="undoReviewModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">撤销最近复核</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="post" action="{{ url_for('undo_review_action') }}">
+                <div class="modal-body">
+                    <input type="hidden" name="anomaly_id" id="undoReviewAnomalyId">
+                    <div class="mb-3">
+                        <label class="form-label">撤销原因（可选）</label>
+                        <textarea class="form-control" name="reason" rows="2"></textarea>
+                    </div>
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle"></i> 撤销最近一次复核操作，状态将回退到上一次操作前的状态。
+                        操作历史将被保留，用于审计追溯。
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-danger">确认撤销</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -535,6 +714,24 @@ function reviewAnomaly(id, result) {
     };
     document.getElementById('reviewResultText').textContent = text[result];
     var modal = new bootstrap.Modal(document.getElementById('reviewModal'));
+    modal.show();
+}
+
+function updateStatus(id) {
+    document.getElementById('updateStatusAnomalyId').value = id;
+    var modal = new bootstrap.Modal(document.getElementById('updateStatusModal'));
+    modal.show();
+}
+
+function appendComment(id) {
+    document.getElementById('appendCommentAnomalyId').value = id;
+    var modal = new bootstrap.Modal(document.getElementById('appendCommentModal'));
+    modal.show();
+}
+
+function undoReview(id) {
+    document.getElementById('undoReviewAnomalyId').value = id;
+    var modal = new bootstrap.Modal(document.getElementById('undoReviewModal'));
     modal.show();
 }
 
@@ -578,6 +775,87 @@ def rollback_anomaly_action():
         flash(f'回滚失败: {str(e)}', 'danger')
 
     return redirect(url_for('anomalies', **request.args.to_dict()))
+
+
+@app.route('/anomalies/update-status', methods=['POST'])
+def update_review_status_action():
+    """修改处置状态"""
+    anomaly_id = int(request.form['anomaly_id'])
+    new_status = request.form['new_status']
+    comment = request.form.get('comment', '')
+
+    try:
+        review_manager.update_review_status(anomaly_id, new_status, comment, 'web')
+        result_names = {'valid': '确认有效', 'false_positive': '误报', 'needs_investigation': '待调查'}
+        flash(f'异常 #{anomaly_id} 状态已修改为「{result_names[new_status]}」', 'success')
+    except Exception as e:
+        flash(f'修改状态失败: {str(e)}', 'danger')
+
+    return redirect(url_for('anomalies', **request.args.to_dict()))
+
+
+@app.route('/anomalies/append-comment', methods=['POST'])
+def append_comment_action():
+    """追加备注"""
+    anomaly_id = int(request.form['anomaly_id'])
+    comment = request.form['comment']
+
+    try:
+        review_manager.append_comment(anomaly_id, comment, 'web')
+        flash(f'已为异常 #{anomaly_id} 追加备注', 'success')
+    except Exception as e:
+        flash(f'追加备注失败: {str(e)}', 'danger')
+
+    return redirect(url_for('anomalies', **request.args.to_dict()))
+
+
+@app.route('/anomalies/undo-review', methods=['POST'])
+def undo_review_action():
+    """撤销最近复核"""
+    anomaly_id = int(request.form['anomaly_id'])
+    reason = request.form.get('reason', '')
+
+    try:
+        review_manager.undo_last_review(anomaly_id, reason, 'web')
+        flash(f'已撤销异常 #{anomaly_id} 的最近一次复核', 'success')
+    except Exception as e:
+        flash(f'撤销失败: {str(e)}', 'danger')
+
+    return redirect(url_for('anomalies', **request.args.to_dict()))
+
+
+@app.route('/api/anomalies/<int:anomaly_id>/review-history')
+def api_anomaly_review_history(anomaly_id):
+    """API: 获取异常复核历史"""
+    try:
+        history = review_manager.get_review_history(anomaly_id)
+        return jsonify({
+            'success': True,
+            'anomaly_id': anomaly_id,
+            'total': len(history),
+            'data': history
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 400
+
+
+@app.route('/api/anomalies/<int:anomaly_id>/review-summary')
+def api_anomaly_review_summary(anomaly_id):
+    """API: 获取异常复核摘要"""
+    try:
+        summary = review_manager.get_review_summary(anomaly_id)
+        return jsonify({
+            'success': True,
+            'data': summary
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 400
 
 
 @app.route('/batches')

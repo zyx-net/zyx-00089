@@ -242,3 +242,34 @@ class ThresholdSchemeLog(Base):
     created_at = Column(DateTime, default=datetime.now, index=True)
 
     scheme = relationship('ThresholdScheme', back_populates='anomalies')
+
+
+class AnomalyReviewHistory(Base):
+    """异常复核历史 - 记录所有复核操作，支持撤销和审计"""
+    __tablename__ = 'anomaly_review_history'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    anomaly_id = Column(Integer, ForeignKey('anomalies.id'), nullable=False, index=True)
+    sequence = Column(Integer, nullable=False, index=True)
+
+    action_type = Column(String(20), nullable=False)
+    review_result = Column(String(20))
+    review_comment = Column(Text)
+    is_false_positive = Column(Boolean, default=False)
+
+    reviewed_by = Column(String(50), nullable=False)
+    reviewed_at = Column(DateTime, default=datetime.now, index=True)
+
+    is_undone = Column(Boolean, default=False, index=True)
+    undone_at = Column(DateTime)
+    undone_by = Column(String(50))
+    undo_reason = Column(String(200))
+
+    extra_data = Column(Text)
+
+    __table_args__ = (
+        UniqueConstraint('anomaly_id', 'sequence', name='_anomaly_sequence_uc'),
+        Index('idx_anomaly_action', 'anomaly_id', 'action_type'),
+    )
+
+    anomaly = relationship('Anomaly', backref='review_history')

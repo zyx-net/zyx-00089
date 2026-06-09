@@ -60,13 +60,25 @@ python main.py anomalies
 # 复核异常（标记为误报）
 python main.py review 1 false_positive --comment "测试误报"
 
+# 查看某条异常的复核时间线
+python main.py review-history 1
+
+# 追加备注（不改变处置状态）
+python main.py review-append 1 "需要联系运维人员进一步核实"
+
+# 修改处置状态
+python main.py review-update 1 needs_investigation --comment "异常原因待查"
+
+# 撤销最近一次复核操作
+python main.py review-undo 1 --reason "操作失误，状态标记错误"
+
 # 回滚批次
 python main.py rollback --batch-id 1 --reason "数据有误"
 
-# 导出HTML报告（自动处理中文编码和HTML转义）
+# 导出HTML报告（含复核摘要，自动处理中文编码和HTML转义）
 python main.py report --format html
 
-# 导出CSV报告（UTF-8 BOM编码，Excel可直接打开）
+# 导出CSV报告（含复核摘要，UTF-8 BOM编码，Excel可直接打开）
 python main.py report --format csv
 
 # 查看统计汇总
@@ -75,7 +87,7 @@ python main.py summary
 # 启动Web界面
 python main.py web
 
-# 运行回归测试（验证所有修复）
+# 运行回归测试（验证所有功能）
 python main.py regression-test
 ```
 
@@ -140,7 +152,7 @@ zyx-00089/
 # 运行完整验收测试（10个测试点）
 python main.py acceptance-test
 
-# 运行回归测试（24个测试点，含阈值方案管理和完整链路验证）
+# 运行回归测试（32个测试点，含阈值方案管理、完整链路验证、复核历史管理）
 python main.py regression-test
 ```
 
@@ -182,38 +194,74 @@ python main.py regression-test
    # 预期：异常1已标记为误报
    ```
 
-5. **回滚批次**
+5. **查看复核时间线**
+   ```bash
+   # 查看异常1的完整复核历史
+   python main.py review-history 1
+   # 预期：显示所有复核操作记录，包含操作类型、时间、操作人、备注
+   ```
+
+6. **追加备注**
+   ```bash
+   # 为异常1追加备注（不改变处置状态）
+   python main.py review-append 1 "已通知张工现场核实，预计明天回复" --by "值班员小李"
+   # 预期：备注追加成功，历史记录数增加
+   ```
+
+7. **修改处置状态**
+   ```bash
+   # 将异常1从"误报"改为"待调查"
+   python main.py review-update 1 needs_investigation --comment "数据存在疑点，需进一步核查" --by "值班主管"
+   # 预期：状态修改成功，历史记录中新增"修改状态"操作
+   ```
+
+8. **撤销复核操作**
+   ```bash
+   # 撤销异常1的最近一次复核操作
+   python main.py review-undo 1 --reason "状态修改错误，应保持误报" --by "值班主管"
+   # 预期：撤销成功，最近一次操作标记为已撤销，状态回退
+   ```
+
+9. **回滚批次（保留审计记录）**
    ```bash
    # 先查看批次列表
    python main.py batches
 
    # 回滚指定批次
    python main.py rollback --batch-id 1 --reason "数据录入错误"
-   # 预期：批次1已回滚，相关异常标记为已回滚
+   # 预期：批次1已回滚，相关异常标记为已回滚，但复核历史记录保留
+
+   # 验证审计记录未被删除
+   python main.py review-history 1
+   # 预期：仍能看到完整的复核历史，审计记录未被误删
    ```
 
-6. **导出报告**
-   ```bash
-   # 导出HTML报告（UTF-8编码，无乱码，标签完整）
-   python main.py report --format html
-   # 预期：报告已生成到 outputs/report_*.html
+10. **导出报告（含复核摘要）**
+    ```bash
+    # 导出HTML报告（UTF-8编码，含复核摘要，无乱码，标签完整）
+    python main.py report --format html
+    # 预期：报告已生成到 outputs/report_*.html，每条异常包含复核摘要
 
-   # 导出CSV报告（UTF-8 BOM，Excel可直接打开）
-   python main.py report --format csv
-   # 预期：报告已生成到 outputs/report_*.csv
-   ```
+    # 导出CSV报告（UTF-8 BOM，含复核摘要，Excel可直接打开）
+    python main.py report --format csv
+    # 预期：报告已生成到 outputs/report_*.csv，包含复核次数、撤销次数等列
+    ```
 
-7. **验证重启一致性**
-   ```bash
-   # 第一次查看汇总
-   python main.py summary
+11. **验证重启一致性**
+    ```bash
+    # 第一次查看汇总
+    python main.py summary
 
-   # 关闭程序后重新运行
-   python main.py summary
-   # 预期：两次结果完全一致，批次、复核、回滚、报告统计保持不变
-   ```
+    # 关闭程序后重新运行
+    python main.py summary
+    # 预期：两次结果完全一致，批次、复核、回滚、报告统计保持不变
 
-8. **阈值方案管理**
+    # 验证复核历史持久化
+    python main.py review-history 1
+    # 预期：重启后复核历史记录完整保留
+    ```
+
+12. **阈值方案管理**
    ```bash
    # 查看所有阈值方案
    python main.py threshold list
@@ -325,6 +373,73 @@ python main.py regression-test
 - **CLI**: Click
 - **Web框架**: Flask
 - **前端**: Bootstrap 5
+
+## 新增功能
+
+### v1.2.0 复核历史管理 ✅
+
+#### 1. 复核批注历史 ✅
+- **功能**: 所有复核操作（首次复核、修改状态、追加备注、撤销）都会完整记录到 `anomaly_review_history` 表
+- **操作类型**: 
+  - `review` - 首次复核
+  - `update_status` - 修改处置状态
+  - `append_comment` - 追加备注
+  - `undo` - 撤销操作
+- **记录字段**: 操作类型、处置状态、备注、操作人、操作时间、撤销状态
+- **数据模型**: [AnomalyReviewHistory](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/models.py)
+
+#### 2. 撤销复核能力 ✅
+- **功能**: 支持撤销最近一次复核操作，异常状态自动回退到上一次操作前的状态
+- **撤销记录**: 被撤销的操作会保留在历史中，标记为"已撤销"，用于审计追溯
+- **连续撤销**: 支持多次撤销，每次撤销最近一次有效操作
+- **再复核一致性**: 撤销后再次复核，展示结果与直接复核保持一致
+
+#### 3. CLI 复核命令增强 ✅
+- `review-history <anomaly_id>` - 查看异常的完整复核时间线，已撤销操作灰色显示
+- `review-append <anomaly_id> <comment>` - 追加备注，不改变处置状态
+- `review-update <anomaly_id> <new_status>` - 修改处置状态，可附加修改说明
+- `review-undo <anomaly_id>` - 撤销最近一次复核操作，可填写撤销原因
+- **实现**: [cli.py](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/cli.py)
+
+#### 4. Web 页面增强 ✅
+- 异常列表增加"修改状态"、"追加备注"、"撤销"操作按钮
+- 异常详情展示"复核摘要"卡片（操作次数、撤销次数、最近复核信息、历史备注）
+- 新增"复核时间线"列表，完整展示所有操作历史，已撤销操作特殊标记
+- 新增 RESTful API:
+  - `GET /api/anomalies/<id>/review-history` - 获取复核历史
+  - `GET /api/anomalies/<id>/review-summary` - 获取复核摘要
+- **实现**: [web.py](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/web.py)
+
+#### 5. 审计记录保护 ✅
+- **批次回滚**: 仅标记异常为"已回滚"状态，不删除任何原始异常或复核历史记录
+- **数据分离**: 原始异常数据与人工复核动作分离存储，审计记录永久保留
+- **验证**: 回滚后 `review-history` 命令仍能看到完整的操作历史
+
+#### 6. 报告导出增强 ✅
+- **HTML 报告**: 每条异常增加"复核摘要"区块，展示：
+  - 复核操作次数、撤销次数
+  - 最近复核人、时间、结果
+  - 历史备注列表
+- **CSV 报告**: 新增 5 个复核摘要列：
+  - 复核次数、撤销次数、最近复核人、最近复核时间、历史备注
+- **实现**: [reports.py](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/reports.py)
+
+#### 7. 持久化保证 ✅
+- 所有复核历史数据存储在 SQLite 数据库，重启后完整保留
+- 模块重载后仍能正确查询历史记录和摘要信息
+
+#### 8. 回归测试覆盖 ✅
+新增 8 个回归测试用例（测试 17-24）：
+- 测试 17: 复核历史记录和追加备注
+- 测试 18: 修改处置状态和撤销复核
+- 测试 19: 连续复核、撤销后再复核的一致性
+- 测试 20: 复核历史跨重启持久化
+- 测试 21: 导出报告包含复核摘要
+- 测试 22: 复核相关 CLI 命令完整性
+- 测试 23: Web API 接口和页面渲染
+- 测试 24: 批次回滚不删除审计记录
+
+**核心业务逻辑实现**: [batch_manager.py](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/batch_manager.py) 中的 `ReviewManager` 类
 
 ## 已修复问题
 

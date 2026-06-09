@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .config import OUTPUT_DIR, EXCEPTION_TYPES, RULE_VERSION
 from .database import get_db
-from .models import Anomaly, Batch, ReportCache, Parcel
+from .models import Anomaly, Batch, ReportCache, Parcel, AnomalyReviewHistory
 from .threshold_manager import threshold_manager
 
 
@@ -236,6 +236,20 @@ class ReportGenerator:
                     if batch:
                         batch_no = batch.batch_no
 
+                history = db.query(AnomalyReviewHistory).filter(
+                    AnomalyReviewHistory.anomaly_id == a.id,
+                    AnomalyReviewHistory.is_undone == False,
+                    AnomalyReviewHistory.action_type != 'undo'
+                ).order_by(AnomalyReviewHistory.sequence.desc()).all()
+
+                review_count = len(history)
+                last_review = history[0] if history else None
+                all_comments = [h.review_comment for h in history if h.review_comment]
+                undo_count = db.query(AnomalyReviewHistory).filter(
+                    AnomalyReviewHistory.anomaly_id == a.id,
+                    AnomalyReviewHistory.is_undone == True
+                ).count()
+
                 anomaly_list.append({
                     'id': a.id,
                     'anomaly_code': a.anomaly_code,
@@ -254,6 +268,14 @@ class ReportGenerator:
                     'is_false_positive': a.is_false_positive,
                     'review_comment': a.review_comment,
                     'extra_data': extra_data,
+                    'review_summary': {
+                        'review_count': review_count,
+                        'undo_count': undo_count,
+                        'last_review_at': last_review.reviewed_at.isoformat() if last_review else None,
+                        'last_review_by': last_review.reviewed_by if last_review else None,
+                        'last_review_result': last_review.review_result if last_review else None,
+                        'all_comments': all_comments,
+                    },
                 })
 
             active_scheme = threshold_manager.get_active_scheme()
@@ -319,10 +341,18 @@ class ReportGenerator:
             writer.writerow([
                 '异常ID', '异常代码', '异常类型', '描述', '地块编号', '地块名称',
                 '严重程度', '规则版本', '阈值方案', '批次号', '检测时间',
-                '是否复核', '复核结果', '是否误报', '复核备注', '扩展信息'
+                '是否复核', '复核结果', '是否误报', '复核备注',
+                '复核次数', '撤销次数', '最近复核人', '最近复核时间', '历史备注',
+                '扩展信息'
             ])
 
+            result_names = {'valid': '确认有效', 'false_positive': '误报', 'needs_investigation': '待调查'}
+
             for a in detailed['anomalies']:
+                review_summary = a.get('review_summary', {})
+                last_result = review_summary.get('last_review_result')
+                last_result_name = result_names.get(last_result, last_result) if last_result else ''
+
                 writer.writerow([
                     a['id'],
                     a['anomaly_code'],
@@ -339,6 +369,11 @@ class ReportGenerator:
                     a.get('review_result', ''),
                     '是' if a.get('is_false_positive') else '否',
                     a.get('review_comment', ''),
+                    review_summary.get('review_count', 0),
+                    review_summary.get('undo_count', 0),
+                    review_summary.get('last_review_by', ''),
+                    review_summary.get('last_review_at', '')[:19] if review_summary.get('last_review_at') else '',
+                    '; '.join(review_summary.get('all_comments', [])),
                     json.dumps(a.get('extra_data', {}), ensure_ascii=False)
                 ])
 
@@ -566,6 +601,14 @@ class ReportGenerator:
         else:
             status_badge = '<span class="badge badge-pending">待复核</span>'
 
+        review_summary = a.get('review_summary', {})
+        review_count = review_summary.get('review_count', 0)
+        undo_count = review_summary.get('undo_count', 0)
+        if review_count > 1:
+            status_badge += f' <span class="badge bg-info">{review_count}次</span>'
+        if undo_count > 0:
+            status_badge += f' <span class="badge bg-secondary">{undo_count}撤</span>'
+
         parcel_display = e(a.get('parcel_name', '') or a.get('parcel_id', '-'))
         scheme_name = e(a.get('threshold_scheme_name', '-'))
         description = e(a['description'])
@@ -598,6 +641,19 @@ class ReportGenerator:
         description = e(a['description'])
         scheme_name = e(a.get('threshold_scheme_name', '-'))
 
+        review_summary = a.get('review_summary', {})
+        review_count = review_summary.get('review_count', 0)
+        undo_count = review_summary.get('undo_count', 0)
+        last_review_by = review_summary.get('last_review_by', '-')
+        last_review_at = review_summary.get('last_review_at', '-')
+        if last_review_at and last_review_at != '-':
+            last_review_at = last_review_at[:19]
+        all_comments = review_summary.get('all_comments', [])
+
+        result_names = {'valid': '确认有效', 'false_positive': '误报', 'needs_investigation': '待调查'}
+        last_result = review_summary.get('last_review_result')
+        last_result_name = result_names.get(last_result, last_result) if last_result else '-'
+
         review_parts = []
         if a['is_reviewed']:
             review_parts.append(f'<p><strong>复核结果：</strong>{e(a.get("review_result", ""))}</p>')
@@ -605,6 +661,18 @@ class ReportGenerator:
             if a.get('review_comment'):
                 review_parts.append(f'<p><strong>复核备注：</strong>{e(a.get("review_comment", ""))}</p>')
         review_section = '\n'.join(review_parts)
+
+        if review_count > 0:
+            summary_section = f'''
+            <div style="background: #fff9e6; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #f39c12;">
+                <h4 style="margin-top: 0; margin-bottom: 10px;">📋 复核摘要</h4>
+                <p style="margin: 5px 0;"><strong>复核操作次数：</strong>{review_count} 次 (撤销 {undo_count} 次)</p>
+                <p style="margin: 5px 0;"><strong>最近复核：</strong>{e(last_review_by)} 于 {e(last_review_at)} 标记为「{e(last_result_name)}」</p>
+                {f'<p style="margin: 5px 0;"><strong>历史备注：</strong></p><ul style="margin: 5px 0; padding-left: 20px;">{"".join(f"<li>{e(c)}</li>" for c in all_comments)}</ul>' if all_comments else ''}
+            </div>
+            '''
+        else:
+            summary_section = ''
 
         return f'''
         <div class="detail-row" style="padding: 15px; margin: 10px 0; border-radius: 5px;">
@@ -617,6 +685,7 @@ class ReportGenerator:
             <p><strong>阈值方案：</strong><code style="color: #17a2b8;">{scheme_name}</code></p>
             <p><strong>批次号：</strong>{e(a.get('batch_no', '-'))}</p>
             {review_section}
+            {summary_section}
             <details>
                 <summary>查看扩展数据</summary>
                 <pre>{extra_str}</pre>

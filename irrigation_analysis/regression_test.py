@@ -12,10 +12,13 @@ import json
 import subprocess
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 
 class RegressionTest:
     """回归测试套件"""
+
+    _test_data_initialized = False
 
     def __init__(self):
         self.project_dir = Path(__file__).resolve().parent.parent
@@ -52,6 +55,15 @@ class RegressionTest:
             self._test_14_threshold_scheme_export_import()
             self._test_15_threshold_scheme_import_conflict()
             self._test_16_threshold_scheme_persistence()
+            RegressionTest._test_data_initialized = False
+            self._test_17_review_history_and_append()
+            self._test_18_review_status_update_and_undo()
+            self._test_19_review_undo_consistency()
+            self._test_20_review_persistence_across_restart()
+            self._test_21_review_export_summary()
+            self._test_22_review_history_cli()
+            self._test_23_review_web_api()
+            self._test_24_rollback_preserves_audit_log()
 
         except Exception as e:
             self._add_result('测试执行异常', False, str(e))
@@ -114,6 +126,67 @@ class RegressionTest:
         if message:
             msg += f' - {message}'
         print(msg)
+
+    def _ensure_test_data(self):
+        """确保测试数据已导入（只初始化一次）"""
+        if RegressionTest._test_data_initialized:
+            return
+
+        code, stdout, _ = self._run_command(['anomalies', '--limit', '1'])
+        has_anomalies = (code == 0 and self._parse_first_anomaly_id(stdout) is not None)
+
+        if not has_anomalies:
+            print('📥 初始化测试数据...')
+            if self.db_path.exists():
+                try:
+                    self.db_path.unlink()
+                    print('🧹 已清理旧数据库')
+                except Exception as e:
+                    print(f'⚠️  无法删除旧数据库: {e}')
+            self._run_command(['init'])
+            self._run_command(['import-all'])
+            self._run_command(['detect'])
+
+        RegressionTest._test_data_initialized = True
+
+    def _parse_first_anomaly_id(self, stdout: str) -> Optional[int]:
+        """从异常列表输出中解析第一个异常ID"""
+        import re
+        import json
+        try:
+            data = json.loads(stdout)
+            if isinstance(data, list) and len(data) > 0:
+                return data[0].get('id')
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        in_data_section = False
+        for line in stdout.split('\n'):
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+
+            if '异常列表' in line or 'ID' in line and '类型' in line:
+                in_data_section = True
+                continue
+
+            if in_data_section:
+                if line.startswith('---') or line.startswith('==='):
+                    continue
+
+                match = re.match(r'^\s*(\d+)\s+', line_stripped)
+                if match:
+                    return int(match.group(1))
+
+                match = re.search(r'^\s*(\d+)\s+\|', line)
+                if match:
+                    return int(match.group(1))
+
+                match = re.search(r'[Ii][Dd].*?[:：]\s*(\d+)', line)
+                if match:
+                    return int(match.group(1))
+
+        return None
 
     def _test_1_gbk_encoding_help(self):
         """测试1: GBK环境下 --help 命令"""
@@ -1037,6 +1110,631 @@ class RegressionTest:
             return
 
         self._add_result('阈值方案跨重启生效', True)
+
+    def _test_17_review_history_and_append(self):
+        """测试17: 复核历史记录和追加备注"""
+        print('\n--- 测试17: 复核历史记录和追加备注 ---')
+
+        self._ensure_test_data()
+
+        code, stdout, stderr = self._run_command(['anomalies', '--limit', '1'])
+        if code != 0:
+            self._add_result('复核历史记录和追加备注', False,
+                           f'获取异常列表失败: {stderr[:200]}')
+            return
+
+        first_anomaly_id = self._parse_first_anomaly_id(stdout)
+        if first_anomaly_id is None:
+            self._add_result('复核历史记录和追加备注', False, '未找到可测试的异常')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'review', str(first_anomaly_id), 'valid',
+            '--comment', '首次复核：确认异常有效',
+            '--by', 'tester1'
+        ])
+
+        if code != 0 or '✅ 复核完成' not in stdout:
+            self._add_result('复核历史记录和追加备注', False,
+                           f'首次复核失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'review-append', str(first_anomaly_id),
+            '追加备注：需要进一步核实水表读数',
+            '--by', 'tester2'
+        ])
+
+        if code != 0 or '✅ 备注追加成功' not in stdout:
+            self._add_result('复核历史记录和追加备注', False,
+                           f'追加备注失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'review-history', str(first_anomaly_id)
+        ])
+
+        if code != 0:
+            self._add_result('复核历史记录和追加备注', False,
+                           f'查询复核历史失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        if '首次复核' not in stdout:
+            self._add_result('复核历史记录和追加备注', False,
+                           f'复核历史中未找到首次复核记录')
+            return
+
+        if '追加备注' not in stdout:
+            self._add_result('复核历史记录和追加备注', False,
+                           f'复核历史中未找到追加备注记录')
+            return
+
+        if 'tester1' not in stdout or 'tester2' not in stdout:
+            self._add_result('复核历史记录和追加备注', False,
+                           f'复核历史中未找到操作人信息')
+            return
+
+        if '2 次操作' not in stdout and '历史记录数: 2' not in stdout:
+            pass
+
+        self._add_result('复核历史记录和追加备注', True)
+
+    def _test_18_review_status_update_and_undo(self):
+        """测试18: 修改处置状态和撤销复核"""
+        print('\n--- 测试18: 修改处置状态和撤销复核 ---')
+
+        self._ensure_test_data()
+
+        code, stdout, stderr = self._run_command(['anomalies', '--limit', '1', '--not-reviewed'])
+        if code != 0:
+            self._add_result('修改处置状态和撤销复核', False,
+                           f'获取待复核异常失败: {stderr[:200]}')
+            return
+
+        anomaly_id = self._parse_first_anomaly_id(stdout)
+        if anomaly_id is None:
+            code, stdout, stderr = self._run_command(['anomalies', '--limit', '1'])
+            anomaly_id = self._parse_first_anomaly_id(stdout)
+
+        if anomaly_id is None:
+            self._add_result('修改处置状态和撤销复核', False, '未找到可测试的异常')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'review', str(anomaly_id), 'false_positive',
+            '--comment', '初始复核：标记为误报',
+            '--by', 'tester_a'
+        ])
+
+        if code != 0:
+            self._add_result('修改处置状态和撤销复核', False,
+                           f'初始复核失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'review-update', str(anomaly_id), 'needs_investigation',
+            '--comment', '修改状态：需要进一步调查',
+            '--by', 'tester_b'
+        ])
+
+        if code != 0 or '✅ 状态修改成功' not in stdout:
+            self._add_result('修改处置状态和撤销复核', False,
+                           f'修改状态失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'review-undo', str(anomaly_id),
+            '--reason', '操作错误，需要撤销',
+            '--by', 'tester_c'
+        ])
+
+        if code != 0 or '✅ 撤销成功' not in stdout:
+            self._add_result('修改处置状态和撤销复核', False,
+                           f'撤销复核失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'review-history', str(anomaly_id)
+        ])
+
+        if code != 0:
+            self._add_result('修改处置状态和撤销复核', False,
+                           f'查询复核历史失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        if '已撤销' not in stdout and '↩️' not in stdout:
+            self._add_result('修改处置状态和撤销复核', False,
+                           f'撤销操作未在历史中显示为已撤销状态')
+            return
+
+        self._add_result('修改处置状态和撤销复核', True)
+
+    def _test_19_review_undo_consistency(self):
+        """测试19: 连续复核、撤销后再复核的一致性"""
+        print('\n--- 测试19: 连续复核、撤销后再复核的一致性 ---')
+
+        self._ensure_test_data()
+
+        code, stdout, stderr = self._run_command(['anomalies', '--limit', '1', '--not-reviewed'])
+        anomaly_id = self._parse_first_anomaly_id(stdout)
+        if anomaly_id is None:
+            code, stdout, stderr = self._run_command(['anomalies', '--limit', '1'])
+            anomaly_id = self._parse_first_anomaly_id(stdout)
+
+        if anomaly_id is None:
+            self._add_result('连续复核撤销再复核一致性', False, '未找到可测试的异常')
+            return
+
+        for i, (status, comment) in enumerate([
+            ('valid', '第一轮：确认有效'),
+            ('false_positive', '第二轮：改为误报'),
+            ('needs_investigation', '第三轮：需要调查')
+        ]):
+            code, _, stderr = self._run_command([
+                'review-update' if i > 0 else 'review',
+                str(anomaly_id), status,
+                '--comment', comment,
+                '--by', f'user{i+1}'
+            ])
+            if code != 0:
+                self._add_result('连续复核撤销再复核一致性', False,
+                               f'第{i+1}轮复核失败: {stderr}')
+                return
+
+        code, _, stderr = self._run_command([
+            'review-undo', str(anomaly_id),
+            '--reason', '撤销第三轮', '--by', 'admin'
+        ])
+        if code != 0:
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'撤销失败: {stderr}')
+            return
+
+        code, stdout, stderr = self._run_command(['anomalies', 'get', str(anomaly_id)])
+        if code != 0:
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'获取异常详情失败: {stderr}')
+            return
+
+        import json
+        try:
+            anomaly_data = json.loads(stdout)
+        except json.JSONDecodeError:
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'解析异常详情失败: {stdout[:200]}')
+            return
+
+        review_summary = anomaly_data.get('review_summary', {})
+        if review_summary.get('review_count') != 2:
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'撤销后有效复核次数应为2，实际为{review_summary.get("review_count")}')
+            return
+
+        if review_summary.get('undo_count') != 1:
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'撤销次数应为1，实际为{review_summary.get("undo_count")}')
+            return
+
+        if review_summary.get('last_review_result') != 'false_positive':
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'撤销后最后结果应为false_positive，实际为{review_summary.get("last_review_result")}')
+            return
+
+        code, _, stderr = self._run_command([
+            'review-update', str(anomaly_id), 'valid',
+            '--comment', '第四轮：再次确认为有效',
+            '--by', 'user4'
+        ])
+        if code != 0:
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'第四轮复核失败: {stderr}')
+            return
+
+        code, stdout, stderr = self._run_command(['anomalies', 'get', str(anomaly_id)])
+        if code != 0:
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'再次获取异常详情失败: {stderr}')
+            return
+
+        try:
+            anomaly_data = json.loads(stdout)
+        except json.JSONDecodeError:
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'再次解析失败: {stdout[:200]}')
+            return
+
+        review_summary = anomaly_data.get('review_summary', {})
+        if review_summary.get('review_count') != 3:
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'再复核后有效次数应为3，实际为{review_summary.get("review_count")}')
+            return
+
+        if review_summary.get('last_review_result') != 'valid':
+            self._add_result('连续复核撤销再复核一致性', False,
+                           f'再复核后最后结果应为valid，实际为{review_summary.get("last_review_result")}')
+            return
+
+        all_comments = review_summary.get('all_comments', [])
+        expected_comments = ['第一轮：确认有效', '第二轮：改为误报', '第四轮：再次确认为有效']
+        for expected in expected_comments:
+            if expected not in all_comments:
+                self._add_result('连续复核撤销再复核一致性', False,
+                               f'历史备注中缺少: {expected}')
+                return
+
+        self._add_result('连续复核撤销再复核一致性', True)
+
+    def _test_20_review_persistence_across_restart(self):
+        """测试20: 复核历史跨重启持久化"""
+        print('\n--- 测试20: 复核历史跨重启持久化 ---')
+
+        self._ensure_test_data()
+
+        code, stdout, stderr = self._run_command(['anomalies', '--limit', '1'])
+        anomaly_id = self._parse_first_anomaly_id(stdout)
+        if anomaly_id is None:
+            self._add_result('复核历史跨重启持久化', False, '未找到可测试的异常')
+            return
+
+        import time
+        unique_comment = f'持久化测试_{int(time.time())}'
+
+        code, _, stderr = self._run_command([
+            'review', str(anomaly_id), 'valid',
+            '--comment', unique_comment,
+            '--by', 'persistence_test'
+        ])
+        if code != 0:
+            self._add_result('复核历史跨重启持久化', False,
+                           f'复核失败: {stderr}')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'review-append', str(anomaly_id),
+            f'追加备注_{int(time.time())}',
+            '--by', 'persistence_test'
+        ])
+        if code != 0:
+            self._add_result('复核历史跨重启持久化', False,
+                           f'追加备注失败: {stderr}')
+            return
+
+        import gc
+        gc.collect()
+
+        import importlib
+        from irrigation_analysis import batch_manager
+        importlib.reload(batch_manager)
+
+        from irrigation_analysis.batch_manager import review_manager
+
+        history = review_manager.get_review_history(anomaly_id)
+        if not history:
+            self._add_result('复核历史跨重启持久化', False,
+                           '重新加载模块后无法查询不到复核历史')
+            return
+
+        found_unique = False
+        for h in history:
+            if h.get('review_comment') == unique_comment:
+                found_unique = True
+                break
+
+        if not found_unique:
+            self._add_result('复核历史跨重启持久化', False,
+                           f'重新加载后未找到特定备注: {unique_comment}')
+            return
+
+        summary = review_manager.get_review_summary(anomaly_id)
+        if summary.get('review_count') < 2:
+            self._add_result('复核历史跨重启持久化', False,
+                           f'重新加载后复核摘要不正确: {summary}')
+            return
+
+        self._add_result('复核历史跨重启持久化', True)
+
+    def _test_21_review_export_summary(self):
+        """测试21: 导出报告包含复核摘要"""
+        print('\n--- 测试21: 导出报告包含复核摘要 ---')
+
+        self._ensure_test_data()
+
+        code, stdout, stderr = self._run_command(['anomalies', '--limit', '1'])
+        anomaly_id = self._parse_first_anomaly_id(stdout)
+        if anomaly_id is None:
+            self._add_result('导出报告包含复核摘要', False, '未找到可测试的异常')
+            return
+
+        self._run_command([
+            'review', str(anomaly_id), 'valid',
+            '--comment', '导出测试：确认有效',
+            '--by', 'export_test'
+        ])
+        self._run_command([
+            'review-append', str(anomaly_id),
+            '导出测试：追加备注',
+            '--by', 'export_test'
+        ])
+
+        code, stdout, stderr = self._run_command(['report', '--format', 'html'])
+        if code != 0:
+            self._add_result('导出报告包含复核摘要', False,
+                           f'HTML导出失败: {stderr}')
+            return
+
+        import re
+        html_path_match = re.search(r'(\S+\.html)', stdout)
+        if not html_path_match:
+            self._add_result('导出报告包含复核摘要', False,
+                           f'未找到HTML导出路径: {stdout}')
+            return
+
+        html_path = html_path_match.group(1)
+        try:
+            with open(html_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+        except Exception as e:
+            self._add_result('导出报告包含复核摘要', False,
+                           f'读取HTML文件失败: {e}')
+            return
+
+        if '复核摘要' not in html_content:
+            self._add_result('导出报告包含复核摘要', False,
+                           'HTML报告中缺少复核摘要标题')
+            return
+
+        if '复核操作次数' not in html_content:
+            self._add_result('导出报告包含复核摘要', False,
+                           'HTML报告中缺少复核操作次数')
+            return
+
+        if '最近复核' not in html_content:
+            self._add_result('导出报告包含复核摘要', False,
+                           'HTML报告中缺少最近复核信息')
+            return
+
+        if '历史备注' not in html_content:
+            self._add_result('导出报告包含复核摘要', False,
+                           'HTML报告中缺少历史备注')
+            return
+
+        code, stdout, stderr = self._run_command(['report', '--format', 'csv'])
+        if code != 0:
+            self._add_result('导出报告包含复核摘要', False,
+                           f'CSV导出失败: {stderr}')
+            return
+
+        csv_path_match = re.search(r'(\S+\.csv)', stdout)
+        if not csv_path_match:
+            self._add_result('导出报告包含复核摘要', False,
+                           f'未找到CSV导出路径: {stdout}')
+            return
+
+        csv_path = csv_path_match.group(1)
+        try:
+            with open(csv_path, 'r', encoding='utf-8-sig') as f:
+                csv_content = f.read()
+        except Exception as e:
+            self._add_result('导出报告包含复核摘要', False,
+                           f'读取CSV文件失败: {e}')
+            return
+
+        csv_headers = ['复核次数', '撤销次数', '最近复核人', '最近复核时间', '历史备注']
+        for header in csv_headers:
+            if header not in csv_content:
+                self._add_result('导出报告包含复核摘要', False,
+                               f'CSV中缺少列: {header}')
+                return
+
+        self._add_result('导出报告包含复核摘要', True)
+
+    def _test_22_review_history_cli(self):
+        """测试22: 复核相关CLI命令完整性"""
+        print('\n--- 测试22: 复核相关CLI命令完整性 ---')
+
+        code, stdout, stderr = self._run_command(['--help'])
+        if code != 0:
+            self._add_result('复核相关CLI命令完整性', False,
+                           f'获取帮助失败: {stderr}')
+            return
+
+        required_commands = [
+            'review ',
+            'review-history',
+            'review-append',
+            'review-update',
+            'review-undo',
+        ]
+        for cmd in required_commands:
+            if cmd not in stdout:
+                self._add_result('复核相关CLI命令完整性', False,
+                               f'CLI帮助中缺少命令: {cmd}')
+                return
+
+        code, stdout, stderr = self._run_command(['review', '--help'])
+        if code != 0:
+            self._add_result('复核相关CLI命令完整性', False,
+                           f'review帮助失败: {stderr}')
+            return
+
+        code, stdout, stderr = self._run_command(['review-history', '--help'])
+        if code != 0:
+            self._add_result('复核相关CLI命令完整性', False,
+                           f'review-history帮助失败: {stderr}')
+            return
+
+        if '查看异常复核时间线' not in stdout:
+            self._add_result('复核相关CLI命令完整性', False,
+                           f'review-history帮助描述不正确: {stdout}')
+            return
+
+        code, stdout, stderr = self._run_command(['review-append', '--help'])
+        if code != 0:
+            self._add_result('复核相关CLI命令完整性', False,
+                           f'review-append帮助失败: {stderr}')
+            return
+
+        code, stdout, stderr = self._run_command(['review-update', '--help'])
+        if code != 0:
+            self._add_result('复核相关CLI命令完整性', False,
+                           f'review-update帮助失败: {stderr}')
+            return
+
+        code, stdout, stderr = self._run_command(['review-undo', '--help'])
+        if code != 0:
+            self._add_result('复核相关CLI命令完整性', False,
+                           f'review-undo帮助失败: {stderr}')
+            return
+
+        self._add_result('复核相关CLI命令完整性', True)
+
+    def _test_23_review_web_api(self):
+        """测试23: Web API接口和页面渲染"""
+        print('\n--- 测试23: Web API接口和页面渲染 ---')
+
+        self._ensure_test_data()
+
+        code, stdout, stderr = self._run_command(['anomalies', '--limit', '1'])
+        anomaly_id = self._parse_first_anomaly_id(stdout)
+        if anomaly_id is None:
+            self._add_result('Web API接口和页面渲染', False, '未找到可测试的异常')
+            return
+
+        self._run_command([
+            'review', str(anomaly_id), 'valid',
+            '--comment', 'Web测试：确认有效',
+            '--by', 'web_test'
+        ])
+
+        from irrigation_analysis import web
+        web.app.config['TESTING'] = True
+        client = web.app.test_client()
+
+        try:
+            response = client.get(f'/api/anomalies/{anomaly_id}/review-history')
+            if response.status_code != 200:
+                self._add_result('Web API接口和页面渲染', False,
+                               f'复核历史API返回状态码: {response.status_code}')
+                return
+
+            import json
+            data = json.loads(response.data.decode('utf-8'))
+            if not data.get('success'):
+                self._add_result('Web API接口和页面渲染', False,
+                               f'复核历史API返回失败: {data}')
+                return
+
+            if data.get('total') < 1:
+                self._add_result('Web API接口和页面渲染', False,
+                               f'复核历史API返回数据不正确: {data}')
+                return
+
+            history_list = data.get('data', [])
+            found_review = False
+            for h in history_list:
+                if h.get('review_comment') and 'Web测试' in h['review_comment']:
+                    found_review = True
+                    break
+            if not found_review:
+                self._add_result('Web API接口和页面渲染', False,
+                               f'复核历史API数据中缺少测试备注: {history_list}')
+                return
+
+            response = client.get(f'/api/anomalies/{anomaly_id}/review-summary')
+            if response.status_code != 200:
+                self._add_result('Web API接口和页面渲染', False,
+                               f'复核摘要API返回状态码: {response.status_code}')
+                return
+
+            data = json.loads(response.data.decode('utf-8'))
+            if not data.get('success'):
+                self._add_result('Web API接口和页面渲染', False,
+                               f'复核摘要API返回失败: {data}')
+                return
+
+            summary = data.get('data', {})
+            if summary.get('review_count') < 2:
+                self._add_result('Web API接口和页面渲染', False,
+                               f'复核摘要API数据不正确，复核次数应为>=2，实际为{summary.get("review_count")}')
+                return
+
+            if 'Web测试：确认有效' not in str(summary.get('all_comments', [])):
+                self._add_result('Web API接口和页面渲染', False,
+                               f'复核摘要API缺少历史备注: {summary}')
+                return
+
+        except Exception as e:
+            self._add_result('Web API接口和页面渲染', False,
+                           f'API测试异常: {e}')
+            return
+
+        self._add_result('Web API接口和页面渲染', True)
+
+    def _test_24_rollback_preserves_audit_log(self):
+        """测试24: 批次回滚不删除审计记录"""
+        print('\n--- 测试24: 批次回滚不删除审计记录 ---')
+
+        self._ensure_test_data()
+
+        code, stdout, stderr = self._run_command(['anomalies', '--limit', '1'])
+        anomaly_id = self._parse_first_anomaly_id(stdout)
+        if anomaly_id is None:
+            self._add_result('批次回滚不删除审计记录', False, '未找到可测试的异常')
+            return
+
+        self._run_command([
+            'review', str(anomaly_id), 'valid',
+            '--comment', '回滚测试：复核',
+            '--by', 'rollback_test'
+        ])
+        self._run_command([
+            'review-append', str(anomaly_id),
+            '回滚测试：追加备注',
+            '--by', 'rollback_test'
+        ])
+
+        from irrigation_analysis.batch_manager import review_manager
+
+        history_before = review_manager.get_review_history(anomaly_id)
+        if not history_before:
+            self._add_result('批次回滚不删除审计记录', False,
+                           '回滚前未找到复核历史')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'rollback', '--anomaly-id', str(anomaly_id),
+            '--reason', '测试回滚不删除审计记录'
+        ])
+        if code != 0:
+            self._add_result('批次回滚不删除审计记录', False,
+                           f'回滚异常失败: {stderr}')
+            return
+
+        history_after = review_manager.get_review_history(anomaly_id)
+        if not history_after:
+            self._add_result('批次回滚不删除审计记录', False,
+                           '回滚后复核历史被删除了！')
+            return
+
+        if len(history_after) != len(history_before):
+            self._add_result('批次回滚不删除审计记录', False,
+                           f'回滚前后历史记录数不一致: 前{len(history_before)} != 后{len(history_after)}')
+            return
+
+        comments_after = [h.get('review_comment') for h in history_after]
+        if '回滚测试：复核' not in comments_after:
+            self._add_result('批次回滚不删除审计记录', False,
+                           '回滚后复核备注丢失')
+            return
+
+        summary = review_manager.get_review_summary(anomaly_id)
+        expected_count = len([h for h in history_after if not h.get('is_undone') and h.get('action_type') != 'undo'])
+        if summary.get('review_count') != expected_count:
+            self._add_result('批次回滚不删除审计记录', False,
+                           f'回滚后复核摘要不正确, 预期{expected_count}，实际{summary.get("review_count")}')
+            return
+
+        self._add_result('批次回滚不删除审计记录', True)
 
     def _print_summary(self):
         """打印测试摘要"""

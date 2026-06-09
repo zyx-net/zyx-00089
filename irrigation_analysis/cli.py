@@ -277,13 +277,20 @@ def list_batches(type, limit):
         CliErrorHandler.handle_error(e)
 
 
-@cli.command('anomalies', help='查看异常列表')
+@cli.group('anomalies', help='🔍 异常管理', invoke_without_command=True)
 @click.option('--batch-id', '-b', default=None, help='按批次过滤')
 @click.option('--type', '-t', default=None, help='按异常类型过滤')
 @click.option('--reviewed/--not-reviewed', default=None, help='按复核状态过滤')
 @click.option('--parcel-id', '-p', default=None, help='按地块过滤')
 @click.option('--limit', '-n', default=50, help='显示数量')
-def list_anomalies(batch_id, type, reviewed, parcel_id, limit):
+@click.pass_context
+def anomalies(ctx, batch_id, type, reviewed, parcel_id, limit):
+    """异常管理命令组"""
+    if ctx.invoked_subcommand is None:
+        _list_anomalies(batch_id, type, reviewed, parcel_id, limit)
+
+
+def _list_anomalies(batch_id, type, reviewed, parcel_id, limit):
     """查看异常列表"""
     try:
         anomalies = review_manager.list_anomalies(
@@ -339,6 +346,37 @@ def list_anomalies(batch_id, type, reviewed, parcel_id, limit):
         CliErrorHandler.handle_error(e)
 
 
+@anomalies.command('list', help='查看异常列表')
+@click.option('--batch-id', '-b', default=None, help='按批次过滤')
+@click.option('--type', '-t', default=None, help='按异常类型过滤')
+@click.option('--reviewed/--not-reviewed', default=None, help='按复核状态过滤')
+@click.option('--parcel-id', '-p', default=None, help='按地块过滤')
+@click.option('--limit', '-n', default=50, help='显示数量')
+def anomalies_list(batch_id, type, reviewed, parcel_id, limit):
+    """查看异常列表"""
+    _list_anomalies(batch_id, type, reviewed, parcel_id, limit)
+
+
+@anomalies.command('get', help='获取单个异常详情（JSON格式）')
+@click.argument('anomaly_id', type=int)
+def anomalies_get(anomaly_id):
+    """
+    获取单个异常的详细信息，输出JSON格式
+
+    ANOMALY_ID: 异常ID
+    """
+    try:
+        anomaly = review_manager.get_anomaly(anomaly_id)
+        if not anomaly:
+            raise ValueError(f'异常不存在: {anomaly_id}')
+
+        import json
+        click.echo(json.dumps(anomaly, ensure_ascii=False, indent=2))
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
 @cli.command('review', help='复核异常')
 @click.argument('anomaly_id', type=int)
 @click.argument('result', type=click.Choice(['valid', 'false_positive', 'needs_investigation']))
@@ -374,6 +412,185 @@ def review_anomaly(anomaly_id, result, comment, by):
         click.echo(f'  复核结果: {result_names[result]}')
         if comment:
             click.echo(f'  复核备注: {comment}')
+        click.echo(f'  历史记录数: {anomaly["review_summary"]["review_count"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@cli.command('review-history', help='查看异常复核时间线')
+@click.argument('anomaly_id', type=int)
+def review_history(anomaly_id):
+    """
+    查看某条异常的复核时间线
+
+    ANOMALY_ID: 异常ID
+    """
+    try:
+        click.echo(f'📜 异常 #{anomaly_id} 的复核时间线')
+        click.echo('=' * 100)
+
+        anomaly = review_manager.get_anomaly(anomaly_id)
+        if not anomaly:
+            raise ValueError(f'异常不存在: {anomaly_id}')
+
+        history = review_manager.get_review_history(anomaly_id)
+
+        click.echo(f'异常描述: {anomaly["description"]}')
+        click.echo(f'异常类型: {anomaly["anomaly_type"]} ({anomaly["anomaly_code"]})')
+        click.echo(f'当前状态: {"已复核" if anomaly["is_reviewed"] else "待复核"}')
+        if anomaly["is_reviewed"]:
+            result_name = {'valid': '确认有效', 'false_positive': '误报', 'needs_investigation': '待调查'}.get(anomaly["review_result"], anomaly["review_result"])
+            click.echo(f'当前结果: {result_name}')
+        click.echo(f'复核次数: {anomaly["review_summary"]["review_count"]} (撤销次数: {anomaly["review_summary"]["undo_count"]})')
+        click.echo()
+
+        if not history:
+            click.echo('暂无复核记录')
+        else:
+            click.echo(f'{"序号":<6} {"操作类型":<12} {"处置状态":<10} {"操作人":<10} {"操作时间":<20} {"备注"}')
+            click.echo('-' * 100)
+
+            for h in history:
+                seq = h['sequence']
+                action = h['action_type_name']
+                result = h['review_result_name'] or '-'
+                operator = h['reviewed_by']
+                time_str = h['reviewed_at'][:19] if h['reviewed_at'] else '-'
+                comment = (h['review_comment'] or '')[:40]
+
+                if h['is_undone']:
+                    prefix = '↩️  '
+                    action_color = 'white'
+                    strike = True
+                else:
+                    prefix = '   '
+                    action_color = {'review': 'green', 'update_status': 'cyan', 'append_comment': 'yellow', 'undo': 'magenta'}.get(h['action_type'], 'white')
+                    strike = False
+
+                display_seq = f'{prefix}#{seq}'
+                display_action = click.style(action, fg=action_color, dim=h['is_undone'])
+                display_result = click.style(result, dim=h['is_undone'])
+                display_comment = click.style(comment, dim=h['is_undone'])
+
+                if strike:
+                    display_seq = click.style(display_seq, fg='white', dim=True)
+
+                click.echo(f'{display_seq:<10} {display_action:<16} {display_result:<10} {operator:<10} {time_str:<20} {display_comment}')
+                if h['is_undone']:
+                    undo_info = f'         于 {h["undone_at"][:19] if h["undone_at"] else "-"} 由 {h["undone_by"]} 撤销'
+                    if h['undo_reason']:
+                        undo_info += f'，原因: {h["undo_reason"]}'
+                    click.echo(click.style(undo_info, fg='white', dim=True))
+
+        click.echo()
+        click.echo('说明: ↩️ 表示该操作已被撤销，显示为灰色')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@cli.command('review-append', help='追加复核备注')
+@click.argument('anomaly_id', type=int)
+@click.argument('comment', type=str)
+@click.option('--by', '-u', default='cli', help='操作人')
+def review_append(anomaly_id, comment, by):
+    """
+    为异常追加备注（不改变处置状态）
+
+    ANOMALY_ID: 异常ID
+
+    COMMENT: 备注内容
+    """
+    try:
+        click.echo(f'📝 为异常 #{anomaly_id} 追加备注...')
+
+        anomaly = review_manager.append_comment(
+            anomaly_id=anomaly_id,
+            comment=comment,
+            reviewed_by=by
+        )
+
+        click.secho(f'✅ 备注追加成功', fg='green', bold=True)
+        click.echo(f'  异常ID: {anomaly_id}')
+        click.echo(f'  备注内容: {comment}')
+        click.echo(f'  历史记录数: {anomaly["review_summary"]["review_count"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@cli.command('review-update', help='修改异常处置状态')
+@click.argument('anomaly_id', type=int)
+@click.argument('new_status', type=click.Choice(['valid', 'false_positive', 'needs_investigation']))
+@click.option('--comment', '-c', default='', help='修改说明（可选）')
+@click.option('--by', '-u', default='cli', help='操作人')
+def review_update(anomaly_id, new_status, comment, by):
+    """
+    修改异常的处置状态
+
+    ANOMALY_ID: 异常ID
+
+    NEW_STATUS: 新的处置状态 (valid/false_positive/needs_investigation)
+    """
+    try:
+        result_names = {
+            'valid': '确认有效',
+            'false_positive': '误报',
+            'needs_investigation': '待调查',
+        }
+
+        click.echo(f'🔄 正在修改异常 #{anomaly_id} 的处置状态...')
+
+        anomaly = review_manager.update_review_status(
+            anomaly_id=anomaly_id,
+            new_status=new_status,
+            comment=comment,
+            reviewed_by=by
+        )
+
+        click.secho(f'✅ 状态修改成功', fg='green', bold=True)
+        click.echo(f'  异常ID: {anomaly_id}')
+        click.echo(f'  新状态: {result_names[new_status]}')
+        if comment:
+            click.echo(f'  修改说明: {comment}')
+        click.echo(f'  历史记录数: {anomaly["review_summary"]["review_count"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@cli.command('review-undo', help='撤销最近一次复核操作')
+@click.argument('anomaly_id', type=int)
+@click.option('--reason', '-r', default='', help='撤销原因')
+@click.option('--by', '-u', default='cli', help='操作人')
+def review_undo(anomaly_id, reason, by):
+    """
+    撤销异常最近一次复核操作
+
+    ANOMALY_ID: 异常ID
+    """
+    try:
+        click.echo(f'⏪ 正在撤销异常 #{anomaly_id} 的最近一次复核...')
+
+        anomaly = review_manager.undo_last_review(
+            anomaly_id=anomaly_id,
+            undo_reason=reason,
+            undone_by=by
+        )
+
+        click.secho(f'✅ 撤销成功', fg='green', bold=True)
+        click.echo(f'  异常ID: {anomaly_id}')
+        if reason:
+            click.echo(f'  撤销原因: {reason}')
+
+        if anomaly["is_reviewed"]:
+            result_name = {'valid': '确认有效', 'false_positive': '误报', 'needs_investigation': '待调查'}.get(anomaly["review_result"], anomaly["review_result"])
+            click.echo(f'  当前状态: 已复核 - {result_name}')
+        else:
+            click.echo(f'  当前状态: 待复核')
+
+        click.echo(f'  撤销次数: {anomaly["review_summary"]["undo_count"]}')
 
     except Exception as e:
         CliErrorHandler.handle_error(e)

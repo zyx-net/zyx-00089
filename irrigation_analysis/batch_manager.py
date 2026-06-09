@@ -2,6 +2,7 @@
 """
 批次管理、复核标记和回滚功能
 """
+import json
 import uuid
 from datetime import datetime
 from typing import List, Dict, Optional, Any
@@ -10,7 +11,7 @@ from sqlalchemy import and_
 from .database import get_db
 from .models import (
     Batch, Anomaly, Rollback, MeterReading, IrrigationPlan,
-    WeatherRecord, RawRow, BatchParcel
+    WeatherRecord, RawRow, BatchParcel, AnomalyReviewHistory
 )
 
 
@@ -96,9 +97,10 @@ class BatchManager:
 
 
 class ReviewManager:
-    """复核管理器"""
+    """复核管理器 - 支持复核历史记录、追加备注、修改状态、撤销复核"""
 
     REVIEW_RESULTS = ['valid', 'false_positive', 'needs_investigation']
+    ACTION_TYPES = ['review', 'update_status', 'append_comment', 'undo']
 
     def list_anomalies(self, batch_id: Any = None, anomaly_type: str = None,
                        is_reviewed: bool = None, is_false_positive: bool = None,
@@ -127,20 +129,62 @@ class ReviewManager:
                 query = query.filter(Anomaly.parcel_id == parcel_id)
 
             anomalies = query.order_by(Anomaly.detected_at.desc()).limit(limit).all()
-            return [self._anomaly_to_dict(a) for a in anomalies]
+            return [self._anomaly_to_dict(a, db) for a in anomalies]
 
     def get_anomaly(self, anomaly_id: int) -> Optional[Dict]:
-        """获取异常详情"""
+        """获取异常详情（含复核摘要）"""
         with get_db() as db:
             anomaly = db.query(Anomaly).filter(Anomaly.id == anomaly_id).first()
             if not anomaly:
                 return None
-            return self._anomaly_to_dict(anomaly, include_details=True)
+            return self._anomaly_to_dict(anomaly, db, include_details=True)
+
+    def get_review_history(self, anomaly_id: int) -> List[Dict]:
+        """获取某条异常的复核时间线（包含撤销记录）"""
+        with get_db() as db:
+            anomaly = db.query(Anomaly).filter(Anomaly.id == anomaly_id).first()
+            if not anomaly:
+                raise ValueError(f"异常不存在: {anomaly_id}")
+
+            history = db.query(AnomalyReviewHistory).filter(
+                AnomalyReviewHistory.anomaly_id == anomaly_id
+            ).order_by(AnomalyReviewHistory.sequence.asc()).all()
+
+            return [self._history_to_dict(h) for h in history]
+
+    def get_review_summary(self, anomaly_id: int) -> Dict:
+        """获取复核摘要（用于报告导出和列表展示）"""
+        with get_db() as db:
+            anomaly = db.query(Anomaly).filter(Anomaly.id == anomaly_id).first()
+            if not anomaly:
+                raise ValueError(f"异常不存在: {anomaly_id}")
+
+            history = db.query(AnomalyReviewHistory).filter(
+                AnomalyReviewHistory.anomaly_id == anomaly_id,
+                AnomalyReviewHistory.is_undone == False
+            ).order_by(AnomalyReviewHistory.sequence.desc()).all()
+
+            review_count = len(history)
+            last_review = history[0] if history else None
+            all_comments = [h.review_comment for h in history if h.review_comment]
+
+            return {
+                'anomaly_id': anomaly_id,
+                'review_count': review_count,
+                'undo_count': db.query(AnomalyReviewHistory).filter(
+                    AnomalyReviewHistory.anomaly_id == anomaly_id,
+                    AnomalyReviewHistory.is_undone == True
+                ).count(),
+                'last_review_at': last_review.reviewed_at.isoformat() if last_review else None,
+                'last_review_by': last_review.reviewed_by if last_review else None,
+                'last_review_result': last_review.review_result if last_review else None,
+                'all_comments': all_comments,
+            }
 
     def review_anomaly(self, anomaly_id: int, review_result: str,
                        review_comment: str = None, reviewed_by: str = 'manual') -> Dict:
         """
-        复核异常
+        复核异常（写入历史记录）
         review_result: valid（确认有效）, false_positive（误报）, needs_investigation（待调查）
         """
         if review_result not in self.REVIEW_RESULTS:
@@ -154,15 +198,192 @@ class ReviewManager:
             if anomaly.is_rolled_back:
                 raise ValueError(f"异常已被回滚，无法复核: {anomaly_id}")
 
+            next_seq = self._get_next_sequence(db, anomaly_id)
+
+            history = AnomalyReviewHistory(
+                anomaly_id=anomaly_id,
+                sequence=next_seq,
+                action_type='review',
+                review_result=review_result,
+                review_comment=review_comment,
+                is_false_positive=(review_result == 'false_positive'),
+                reviewed_by=reviewed_by,
+                reviewed_at=datetime.now(),
+                is_undone=False
+            )
+            db.add(history)
+
             anomaly.is_reviewed = True
-            anomaly.reviewed_at = datetime.now()
+            anomaly.reviewed_at = history.reviewed_at
             anomaly.reviewed_by = reviewed_by
             anomaly.review_result = review_result
             anomaly.review_comment = review_comment
             anomaly.is_false_positive = (review_result == 'false_positive')
 
             db.flush()
-            return self._anomaly_to_dict(anomaly)
+            return self._anomaly_to_dict(anomaly, db)
+
+    def append_comment(self, anomaly_id: int, comment: str,
+                       reviewed_by: str = 'manual') -> Dict:
+        """追加备注（不改变状态，仅添加备注）"""
+        if not comment or not comment.strip():
+            raise ValueError("备注不能为空")
+
+        with get_db() as db:
+            anomaly = db.query(Anomaly).filter(Anomaly.id == anomaly_id).first()
+            if not anomaly:
+                raise ValueError(f"异常不存在: {anomaly_id}")
+
+            if anomaly.is_rolled_back:
+                raise ValueError(f"异常已被回滚，无法追加备注: {anomaly_id}")
+
+            next_seq = self._get_next_sequence(db, anomaly_id)
+
+            history = AnomalyReviewHistory(
+                anomaly_id=anomaly_id,
+                sequence=next_seq,
+                action_type='append_comment',
+                review_result=anomaly.review_result,
+                review_comment=comment.strip(),
+                is_false_positive=anomaly.is_false_positive,
+                reviewed_by=reviewed_by,
+                reviewed_at=datetime.now(),
+                is_undone=False
+            )
+            db.add(history)
+
+            existing_comment = anomaly.review_comment or ''
+            if existing_comment:
+                anomaly.review_comment = existing_comment + '\n' + comment.strip()
+            else:
+                anomaly.review_comment = comment.strip()
+            anomaly.reviewed_at = history.reviewed_at
+            anomaly.reviewed_by = reviewed_by
+
+            db.flush()
+            return self._anomaly_to_dict(anomaly, db)
+
+    def update_review_status(self, anomaly_id: int, new_status: str,
+                             comment: str = None, reviewed_by: str = 'manual') -> Dict:
+        """修改处置状态（更新复核结果，可选添加备注）"""
+        if new_status not in self.REVIEW_RESULTS:
+            raise ValueError(f"无效的复核状态: {new_status}。有效值: {self.REVIEW_RESULTS}")
+
+        with get_db() as db:
+            anomaly = db.query(Anomaly).filter(Anomaly.id == anomaly_id).first()
+            if not anomaly:
+                raise ValueError(f"异常不存在: {anomaly_id}")
+
+            if anomaly.is_rolled_back:
+                raise ValueError(f"异常已被回滚，无法修改状态: {anomaly_id}")
+
+            next_seq = self._get_next_sequence(db, anomaly_id)
+
+            history = AnomalyReviewHistory(
+                anomaly_id=anomaly_id,
+                sequence=next_seq,
+                action_type='update_status',
+                review_result=new_status,
+                review_comment=comment,
+                is_false_positive=(new_status == 'false_positive'),
+                reviewed_by=reviewed_by,
+                reviewed_at=datetime.now(),
+                is_undone=False
+            )
+            db.add(history)
+
+            anomaly.is_reviewed = True
+            anomaly.reviewed_at = history.reviewed_at
+            anomaly.reviewed_by = reviewed_by
+            anomaly.review_result = new_status
+            anomaly.is_false_positive = (new_status == 'false_positive')
+            if comment:
+                existing_comment = anomaly.review_comment or ''
+                if existing_comment:
+                    anomaly.review_comment = existing_comment + '\n' + comment
+                else:
+                    anomaly.review_comment = comment
+
+            db.flush()
+            return self._anomaly_to_dict(anomaly, db)
+
+    def undo_last_review(self, anomaly_id: int, undo_reason: str = None,
+                         undone_by: str = 'manual') -> Dict:
+        """
+        撤销最近一次复核操作
+        撤销后异常状态回滚到上一次操作前的状态
+        """
+        with get_db() as db:
+            anomaly = db.query(Anomaly).filter(Anomaly.id == anomaly_id).first()
+            if not anomaly:
+                raise ValueError(f"异常不存在: {anomaly_id}")
+
+            if anomaly.is_rolled_back:
+                raise ValueError(f"异常已被回滚，无法撤销: {anomaly_id}")
+
+            last_history = db.query(AnomalyReviewHistory).filter(
+                AnomalyReviewHistory.anomaly_id == anomaly_id,
+                AnomalyReviewHistory.is_undone == False
+            ).order_by(AnomalyReviewHistory.sequence.desc()).first()
+
+            if not last_history:
+                raise ValueError(f"异常 {anomaly_id} 没有可撤销的复核操作")
+
+            last_history.is_undone = True
+            last_history.undone_at = datetime.now()
+            last_history.undone_by = undone_by
+            last_history.undo_reason = undo_reason
+
+            next_seq = self._get_next_sequence(db, anomaly_id)
+            undo_history = AnomalyReviewHistory(
+                anomaly_id=anomaly_id,
+                sequence=next_seq,
+                action_type='undo',
+                review_result=None,
+                review_comment=undo_reason,
+                is_false_positive=False,
+                reviewed_by=undone_by,
+                reviewed_at=last_history.undone_at,
+                is_undone=False,
+                extra_data=json.dumps({
+                    'undone_sequence': last_history.sequence,
+                    'undone_action_type': last_history.action_type,
+                    'undone_result': last_history.review_result,
+                }, ensure_ascii=False)
+            )
+            db.add(undo_history)
+
+            current_valid = db.query(AnomalyReviewHistory).filter(
+                AnomalyReviewHistory.anomaly_id == anomaly_id,
+                AnomalyReviewHistory.is_undone == False,
+                AnomalyReviewHistory.action_type != 'undo'
+            ).order_by(AnomalyReviewHistory.sequence.desc()).first()
+
+            if current_valid:
+                anomaly.is_reviewed = True
+                anomaly.reviewed_at = current_valid.reviewed_at
+                anomaly.reviewed_by = current_valid.reviewed_by
+                anomaly.review_result = current_valid.review_result
+                anomaly.is_false_positive = current_valid.is_false_positive
+
+                all_comments = db.query(AnomalyReviewHistory).filter(
+                    AnomalyReviewHistory.anomaly_id == anomaly_id,
+                    AnomalyReviewHistory.is_undone == False,
+                    AnomalyReviewHistory.review_comment != None
+                ).order_by(AnomalyReviewHistory.sequence.asc()).all()
+
+                comments = [h.review_comment for h in all_comments if h.review_comment and h.sequence <= current_valid.sequence]
+                anomaly.review_comment = '\n'.join(comments) if comments else None
+            else:
+                anomaly.is_reviewed = False
+                anomaly.reviewed_at = None
+                anomaly.reviewed_by = None
+                anomaly.review_result = None
+                anomaly.review_comment = None
+                anomaly.is_false_positive = False
+
+            db.flush()
+            return self._anomaly_to_dict(anomaly, db)
 
     def batch_review(self, anomaly_ids: List[int], review_result: str,
                      review_comment: str = None, reviewed_by: str = 'manual') -> int:
@@ -176,13 +397,58 @@ class ReviewManager:
                 continue
         return count
 
-    def _anomaly_to_dict(self, anomaly: Anomaly, include_details: bool = False) -> Dict:
-        """转换异常为字典"""
+    def _get_next_sequence(self, db, anomaly_id: int) -> int:
+        """获取下一个序列号"""
+        max_seq = db.query(AnomalyReviewHistory).filter(
+            AnomalyReviewHistory.anomaly_id == anomaly_id
+        ).count()
+        return max_seq + 1
+
+    def _history_to_dict(self, history: AnomalyReviewHistory) -> Dict:
+        """转换复核历史记录为字典"""
+        import json
+        try:
+            extra_data = json.loads(history.extra_data) if history.extra_data else None
+        except (json.JSONDecodeError, TypeError):
+            extra_data = {'raw': history.extra_data}
+
+        return {
+            'id': history.id,
+            'anomaly_id': history.anomaly_id,
+            'sequence': history.sequence,
+            'action_type': history.action_type,
+            'action_type_name': {
+                'review': '首次复核',
+                'update_status': '修改状态',
+                'append_comment': '追加备注',
+                'undo': '撤销操作'
+            }.get(history.action_type, history.action_type),
+            'review_result': history.review_result,
+            'review_result_name': {
+                'valid': '确认有效',
+                'false_positive': '误报',
+                'needs_investigation': '待调查'
+            }.get(history.review_result, history.review_result) if history.review_result else None,
+            'review_comment': history.review_comment,
+            'is_false_positive': history.is_false_positive,
+            'reviewed_by': history.reviewed_by,
+            'reviewed_at': history.reviewed_at.isoformat() if history.reviewed_at else None,
+            'is_undone': history.is_undone,
+            'undone_at': history.undone_at.isoformat() if history.undone_at else None,
+            'undone_by': history.undone_by,
+            'undo_reason': history.undo_reason,
+            'extra_data': extra_data,
+        }
+
+    def _anomaly_to_dict(self, anomaly: Anomaly, db, include_details: bool = False) -> Dict:
+        """转换异常为字典（含复核摘要）"""
         import json
         try:
             extra_data = json.loads(anomaly.extra_data) if anomaly.extra_data else {}
         except (json.JSONDecodeError, TypeError):
             extra_data = {'raw': anomaly.extra_data}
+
+        review_summary = self._get_summary_sync(db, anomaly.id)
 
         result = {
             'id': anomaly.id,
@@ -210,30 +476,63 @@ class ReviewManager:
 
             'is_rolled_back': anomaly.is_rolled_back,
             'rollback_id': anomaly.rollback_id,
+
+            'review_summary': review_summary,
         }
 
         if include_details:
-            with get_db() as db:
-                from .models import RawRow
-                if anomaly.raw_row_id:
-                    raw_row = db.query(RawRow).filter(RawRow.id == anomaly.raw_row_id).first()
-                    if raw_row:
-                        try:
-                            result['raw_row_data'] = json.loads(raw_row.row_data)
-                        except (json.JSONDecodeError, TypeError):
-                            result['raw_row_data'] = raw_row.row_data
-                        result['row_number'] = raw_row.row_number
+            from .models import RawRow
+            if anomaly.raw_row_id:
+                raw_row = db.query(RawRow).filter(RawRow.id == anomaly.raw_row_id).first()
+                if raw_row:
+                    try:
+                        result['raw_row_data'] = json.loads(raw_row.row_data)
+                    except (json.JSONDecodeError, TypeError):
+                        result['raw_row_data'] = raw_row.row_data
+                    result['row_number'] = raw_row.row_number
 
-                if anomaly.batch_id:
-                    batch = db.query(Batch).filter(Batch.id == anomaly.batch_id).first()
-                    if batch:
-                        result['batch_no'] = batch.batch_no
+            if anomaly.batch_id:
+                batch = db.query(Batch).filter(Batch.id == anomaly.batch_id).first()
+                if batch:
+                    result['batch_no'] = batch.batch_no
+
+            review_history = db.query(AnomalyReviewHistory).filter(
+                AnomalyReviewHistory.anomaly_id == anomaly.id
+            ).order_by(AnomalyReviewHistory.sequence.asc()).all()
+            result['review_history'] = [self._history_to_dict(h) for h in review_history]
 
         return result
 
+    def _get_summary_sync(self, db, anomaly_id: int) -> Dict:
+        """同步获取复核摘要（内部使用）"""
+        history = db.query(AnomalyReviewHistory).filter(
+            AnomalyReviewHistory.anomaly_id == anomaly_id,
+            AnomalyReviewHistory.is_undone == False,
+            AnomalyReviewHistory.action_type != 'undo'
+        ).order_by(AnomalyReviewHistory.sequence.desc()).all()
+
+        review_count = len(history)
+        last_review = history[0] if history else None
+        all_comments = [h.review_comment for h in history if h.review_comment]
+
+        return {
+            'review_count': review_count,
+            'undo_count': db.query(AnomalyReviewHistory).filter(
+                AnomalyReviewHistory.anomaly_id == anomaly_id,
+                AnomalyReviewHistory.is_undone == True
+            ).count(),
+            'last_review_at': last_review.reviewed_at.isoformat() if last_review else None,
+            'last_review_by': last_review.reviewed_by if last_review else None,
+            'last_review_result': last_review.review_result if last_review else None,
+            'all_comments': all_comments,
+        }
+
 
 class RollbackManager:
-    """回滚管理器"""
+    """回滚管理器
+    注意：回滚操作仅标记异常为已回滚状态，不删除任何原始异常记录或复核历史记录。
+    审计数据（anomaly_review_history表）永久保留，用于追溯和合规审计。
+    """
 
     def rollback_batch(self, batch_id_or_no: Any, reason: str,
                        created_by: str = 'manual') -> Dict:
