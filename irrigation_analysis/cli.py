@@ -22,6 +22,12 @@ from .threshold_manager import (
     ThresholdSchemeNotFoundError, ThresholdSchemeNameConflictError,
     ThresholdSchemeValidationError, ThresholdSchemeImportError
 )
+from .sandbox_manager import (
+    sandbox_manager, SandboxError, SandboxNotFoundError,
+    SandboxRuleError, SandboxTrialError, SandboxConflictError,
+    SandboxPromotionError
+)
+from . import test_sandbox as sandbox_test_module
 
 
 def _fix_console_encoding() -> None:
@@ -75,6 +81,18 @@ class CliErrorHandler:
             click.secho(f'❌ 导入错误: {str(e)}', fg='red', bold=True)
         elif isinstance(e, ThresholdSchemeError):
             click.secho(f'❌ 阈值方案错误: {str(e)}', fg='red', bold=True)
+        elif isinstance(e, SandboxNotFoundError):
+            click.secho(f'❌ 沙盒不存在: {str(e)}', fg='red', bold=True)
+        elif isinstance(e, SandboxRuleError):
+            click.secho(f'❌ 规则错误: {str(e)}', fg='red', bold=True)
+        elif isinstance(e, SandboxTrialError):
+            click.secho(f'❌ 试跑错误: {str(e)}', fg='red', bold=True)
+        elif isinstance(e, SandboxConflictError):
+            click.secho(f'⚠️  冲突警告: {str(e)}', fg='yellow', bold=True)
+        elif isinstance(e, SandboxPromotionError):
+            click.secho(f'❌ 提升错误: {str(e)}', fg='red', bold=True)
+        elif isinstance(e, SandboxError):
+            click.secho(f'❌ 沙盒错误: {str(e)}', fg='red', bold=True)
         elif isinstance(e, ValueError):
             click.secho(f'❌ 参数错误: {str(e)}', fg='red', bold=True)
         elif isinstance(e, FileNotFoundError):
@@ -1120,6 +1138,830 @@ def delete_scheme(scheme, by, force):
         threshold_manager.delete_scheme(scheme, operator=by)
 
         click.secho(f'✅ 方案已删除', fg='green', bold=True)
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@cli.group(help='🧪 数据修正规则沙盒管理')
+def sandbox():
+    """数据修正规则沙盒管理命令组"""
+    pass
+
+
+@sandbox.command('list', help='列出所有沙盒')
+@click.option('--status', '-s', default=None, help='按状态过滤')
+@click.option('--created-by', '-u', default=None, help='按创建人过滤')
+@click.option('--limit', '-n', default=20, help='显示数量')
+def sandbox_list(status, created_by, limit):
+    """列出所有沙盒"""
+    try:
+        sandboxes = sandbox_manager.list_sandboxes(status=status, created_by=created_by, limit=limit)
+
+        click.echo(f'🧪 沙盒列表 (共 {len(sandboxes)} 个):')
+        click.echo('-' * 110)
+        click.echo(f'{"ID":>4} {"状态":<8} {"名称":<20} {"样例":>4} {"规则":>4} {"试跑":>4} {"创建人":<10} {"创建时间":<20}')
+        click.echo('-' * 110)
+
+        for s in sandboxes:
+            status_name = {
+                'draft': '草稿',
+                'testing': '测试中',
+                'approved': '已审批',
+                'applied': '已应用',
+                'archived': '已归档',
+                'rolled_back': '已回滚'
+            }.get(s['status'], s['status'])
+            status_color = {
+                'draft': 'white',
+                'testing': 'cyan',
+                'approved': 'green',
+                'applied': 'green',
+                'archived': 'yellow',
+                'rolled_back': 'red'
+            }.get(s['status'], 'white')
+
+            sample_count = s.get('sample_count', 0) if s.get('sample_count') is not None else 0
+            rule_count = s.get('rule_count', 0) if s.get('rule_count') is not None else 0
+            trial_count = s.get('trial_count', 0) if s.get('trial_count') is not None else 0
+
+            click.echo(f'{s["id"]:>4} ', nl=False)
+            click.secho(f'{status_name:<8} ', fg=status_color, nl=False)
+            click.echo(f'{s["name"][:18]:<20} {sample_count:>4} {rule_count:>4} {trial_count:>4} {s["created_by"]:<10} {s["created_at"][:19] if s["created_at"] else "":<20}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('create', help='创建新沙盒')
+@click.option('--name', '-n', required=True, help='沙盒名称')
+@click.option('--description', '-d', default='', help='沙盒描述')
+@click.option('--source-dataset', '-s', default=None, help='源数据集标识')
+@click.option('--source-batch-id', '-b', default=None, help='关联批次ID或批次号')
+@click.option('--by', '-u', default='cli', help='创建人')
+def sandbox_create(name, description, source_dataset, source_batch_id, by):
+    """创建新沙盒"""
+    try:
+        click.echo(f'🧪 正在创建沙盒 "{name}"...')
+
+        sandbox = sandbox_manager.create_sandbox(
+            name=name,
+            description=description,
+            source_dataset=source_dataset,
+            source_batch_id=source_batch_id,
+            created_by=by
+        )
+
+        click.secho(f'✅ 沙盒创建成功', fg='green', bold=True)
+        click.echo(f'  沙盒ID: {sandbox["id"]}')
+        click.echo(f'  沙盒编号: {sandbox["sandbox_no"]}')
+        click.echo(f'  名称: {sandbox["name"]}')
+        if sandbox['description']:
+            click.echo(f'  描述: {sandbox["description"]}')
+        click.echo(f'  状态: 草稿')
+        click.echo(f'  创建人: {sandbox["created_by"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('show', help='查看沙盒详情')
+@click.argument('sandbox_id', required=True)
+def sandbox_show(sandbox_id):
+    """
+    查看沙盒详情
+
+    SANDBOX_ID: 沙盒ID或沙盒编号
+    """
+    try:
+        sandbox = sandbox_manager.get_sandbox(sandbox_id, include_details=True)
+        if not sandbox:
+            raise SandboxNotFoundError(f'沙盒不存在: {sandbox_id}')
+
+        click.echo(f'🧪 沙盒详情')
+        click.echo('=' * 60)
+        click.echo(f'  ID: {sandbox["id"]}')
+        click.echo(f'  编号: {sandbox["sandbox_no"]}')
+        click.echo(f'  名称: {sandbox["name"]}')
+
+        status_name = {
+            'draft': '草稿',
+            'testing': '测试中',
+            'approved': '已审批',
+            'applied': '已应用',
+            'archived': '已归档',
+            'rolled_back': '已回滚'
+        }.get(sandbox['status'], sandbox['status'])
+        status_color = {
+            'draft': 'white',
+            'testing': 'cyan',
+            'approved': 'green',
+            'applied': 'green',
+            'archived': 'yellow',
+            'rolled_back': 'red'
+        }.get(sandbox['status'], 'white')
+        click.secho(f'  状态: {status_name}', fg=status_color)
+
+        if sandbox['description']:
+            click.echo(f'  描述: {sandbox["description"]}')
+        if sandbox['source_dataset']:
+            click.echo(f'  源数据集: {sandbox["source_dataset"]}')
+        if sandbox['source_batch_id']:
+            click.echo(f'  关联批次: {sandbox["source_batch_id"]}')
+        click.echo(f'  创建人: {sandbox["created_by"]}')
+        click.echo(f'  创建时间: {sandbox["created_at"]}')
+        click.echo(f'  样例数据: {sandbox.get("sample_count", 0)} 份')
+        click.echo(f'  激活规则: {sandbox.get("rule_count", 0)} 条')
+        click.echo(f'  试跑次数: {sandbox.get("trial_count", 0)} 次')
+        click.echo(f'  操作日志: {sandbox.get("log_count", 0)} 条')
+
+        if sandbox.get('last_trial'):
+            lt = sandbox['last_trial']
+            click.echo()
+            click.echo(f'📊 最近一次试跑:')
+            click.echo(f'  试跑ID: {lt["id"]}')
+            click.echo(f'  状态: {lt["status"]}')
+            click.echo(f'  总行数: {lt["total_rows"]}')
+            click.echo(f'  影响行数: {lt["affected_rows"]}')
+            click.echo(f'  未变化: {lt["unchanged_rows"]}')
+            click.echo(f'  错误: {lt["error_count"]}')
+            click.echo(f'  执行人: {lt["executed_by"]}')
+            click.echo(f'  执行时间: {lt["executed_at"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('delete', help='删除沙盒')
+@click.argument('sandbox_id', required=True)
+@click.option('--by', '-u', default='cli', help='操作人')
+@click.option('--force', is_flag=True, help='强制删除（不提示）')
+def sandbox_delete(sandbox_id, by, force):
+    """
+    删除沙盒
+
+    SANDBOX_ID: 沙盒ID或沙盒编号
+    """
+    try:
+        sandbox = sandbox_manager.get_sandbox(sandbox_id)
+        if not sandbox:
+            raise SandboxNotFoundError(f'沙盒不存在: {sandbox_id}')
+
+        if not force:
+            click.secho(f'⚠️  您将要删除沙盒: [{sandbox["id"]}] {sandbox["name"]}', fg='yellow', bold=True)
+            click.echo(f'  状态: {sandbox["status"]}')
+            click.echo(f'  创建时间: {sandbox["created_at"]}')
+            click.echo()
+            if not click.confirm('确定要删除此沙盒吗？此操作不可撤销，所有样例、规则、试跑记录都将被删除'):
+                click.echo('已取消删除')
+                return
+
+        click.echo(f'🗑️  正在删除沙盒 "{sandbox["name"]}"...')
+        sandbox_manager.delete_sandbox(sandbox_id, operator=by)
+
+        click.secho(f'✅ 沙盒已删除', fg='green', bold=True)
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('import-sample', help='导入样例数据（CSV或JSON）')
+@click.argument('sandbox_id', required=True)
+@click.argument('file_path', type=click.Path(exists=True, readable=True))
+@click.argument('source_type', type=click.Choice(['parcel', 'meter', 'plan', 'weather']))
+@click.option('--sample-name', '-n', default=None, help='样例名称（默认使用文件名）')
+@click.option('--by', '-u', default='cli', help='操作人')
+def sandbox_import_sample(sandbox_id, file_path, source_type, sample_name, by):
+    """
+    导入样例数据
+
+    SANDBOX_ID: 沙盒ID或沙盒编号
+    FILE_PATH: CSV或JSON文件路径
+    SOURCE_TYPE: 数据类型 (parcel/meter/plan/weather)
+    """
+    try:
+        type_names = {
+            'parcel': '地块台账',
+            'meter': '水表读数',
+            'plan': '灌溉计划',
+            'weather': '天气补录',
+        }
+
+        click.echo(f'📥 正在导入{type_names[source_type]}样例数据...')
+
+        sample = sandbox_manager.import_sample(
+            sandbox_id_or_no=sandbox_id,
+            file_path=file_path,
+            source_type=source_type,
+            sample_name=sample_name,
+            operator=by
+        )
+
+        click.secho(f'✅ 样例导入成功', fg='green', bold=True)
+        click.echo(f'  样例ID: {sample["id"]}')
+        click.echo(f'  样例名称: {sample["sample_name"]}')
+        click.echo(f'  数据类型: {type_names[source_type]}')
+        click.echo(f'  数据行数: {sample["row_count"]}')
+        click.echo(f'  源文件: {sample["source_file"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('samples', help='列出样例数据')
+@click.argument('sandbox_id', required=True)
+def sandbox_samples(sandbox_id):
+    """
+    列出沙盒中的样例数据
+
+    SANDBOX_ID: 沙盒ID或沙盒编号
+    """
+    try:
+        samples = sandbox_manager.list_samples(sandbox_id)
+
+        type_names = {
+            'parcel': '地块台账',
+            'meter': '水表读数',
+            'plan': '灌溉计划',
+            'weather': '天气补录',
+        }
+
+        click.echo(f'📋 样例数据列表 (共 {len(samples)} 份):')
+        click.echo('-' * 80)
+        click.echo(f'{"ID":>4} {"类型":<8} {"名称":<25} {"行数":>6} {"创建人":<10} {"创建时间":<20}')
+        click.echo('-' * 80)
+
+        for s in samples:
+            type_name = type_names.get(s['source_type'], s['source_type'])
+            click.echo(f'{s["id"]:>4} {type_name:<8} {s["sample_name"][:23]:<25} {s["row_count"]:>6} {s["created_by"]:<10} {s["created_at"][:19] if s["created_at"] else "":<20}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('add-rule', help='添加修正规则')
+@click.argument('sandbox_id', required=True)
+@click.argument('rule_type', type=click.Choice(['field_mapping', 'missing_fill', 'outlier_replace', 'custom']))
+@click.argument('rule_name')
+@click.option('--source-field', '-s', default=None, help='源字段名（字段映射用）')
+@click.option('--target-field', '-t', default=None, help='目标字段名')
+@click.option('--condition', '-c', default=None, help='条件表达式')
+@click.option('--replacement', '-r', default=None, help='替换值或表达式（异常值改写/自定义用）')
+@click.option('--fill-value', '-f', default=None, help='填补值（缺失值填补用）')
+@click.option('--mapping', '-m', default=None, help='映射数据JSON（键值对）')
+@click.option('--priority', '-p', default=0, type=int, help='优先级（数字越大越先执行）')
+@click.option('--by', '-u', default='cli', help='操作人')
+def sandbox_add_rule(sandbox_id, rule_type, rule_name, source_field, target_field,
+                     condition, replacement, fill_value, mapping, priority, by):
+    """
+    添加修正规则
+
+    SANDBOX_ID: 沙盒ID或沙盒编号
+    RULE_TYPE: 规则类型 (field_mapping/missing_fill/outlier_replace/custom)
+    RULE_NAME: 规则名称
+
+    规则类型说明:
+    - field_mapping: 字段映射，将源字段值复制到目标字段
+    - missing_fill: 缺失值填补，当目标字段为空时使用填补值
+    - outlier_replace: 异常值改写，满足条件时替换目标字段值
+    - custom: 自定义规则，执行条件和替换的Python表达式
+    """
+    try:
+        type_names = {
+            'field_mapping': '字段映射',
+            'missing_fill': '缺失值填补',
+            'outlier_replace': '异常值改写',
+            'custom': '自定义'
+        }
+
+        mapping_data = None
+        if mapping:
+            try:
+                mapping_data = json.loads(mapping)
+            except json.JSONDecodeError:
+                raise ValueError(f'映射数据JSON格式错误: {mapping}')
+
+        click.echo(f'📝 正在添加{type_names[rule_type]}规则 "{rule_name}"...')
+
+        rule = sandbox_manager.add_rule(
+            sandbox_id_or_no=sandbox_id,
+            rule_type=rule_type,
+            rule_name=rule_name,
+            source_field=source_field,
+            target_field=target_field,
+            condition=condition,
+            replacement=replacement,
+            fill_value=fill_value,
+            mapping_data=mapping_data,
+            priority=priority,
+            operator=by
+        )
+
+        click.secho(f'✅ 规则添加成功', fg='green', bold=True)
+        click.echo(f'  规则ID: {rule["id"]}')
+        click.echo(f'  规则类型: {type_names[rule_type]}')
+        click.echo(f'  规则名称: {rule["rule_name"]}')
+        if rule['source_field']:
+            click.echo(f'  源字段: {rule["source_field"]}')
+        if rule['target_field']:
+            click.echo(f'  目标字段: {rule["target_field"]}')
+        if rule['condition']:
+            click.echo(f'  条件: {rule["condition"]}')
+        if rule['replacement']:
+            click.echo(f'  替换: {rule["replacement"]}')
+        if rule['fill_value'] is not None:
+            click.echo(f'  填补值: {rule["fill_value"]}')
+        if rule['mapping_data']:
+            click.echo(f'  映射数据: {json.dumps(rule["mapping_data"], ensure_ascii=False)}')
+        click.echo(f'  优先级: {rule["priority"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('rules', help='列出规则')
+@click.argument('sandbox_id', required=True)
+@click.option('--type', '-t', default=None, help='按规则类型过滤')
+def sandbox_rules(sandbox_id, type):
+    """
+    列出沙盒中的规则
+
+    SANDBOX_ID: 沙盒ID或沙盒编号
+    """
+    try:
+        rules = sandbox_manager.list_rules(sandbox_id, rule_type=type)
+
+        type_names = {
+            'field_mapping': '字段映射',
+            'missing_fill': '缺失值填补',
+            'outlier_replace': '异常值改写',
+            'custom': '自定义'
+        }
+
+        click.echo(f'📋 规则列表 (共 {len(rules)} 条):')
+        click.echo('-' * 100)
+        click.echo(f'{"ID":>4} {"优先级":>4} {"类型":<8} {"名称":<20} {"目标字段":<15} {"创建人":<10}')
+        click.echo('-' * 100)
+
+        for r in rules:
+            type_name = type_names.get(r['rule_type'], r['rule_type'])
+            type_color = {
+                'field_mapping': 'cyan',
+                'missing_fill': 'green',
+                'outlier_replace': 'yellow',
+                'custom': 'magenta'
+            }.get(r['rule_type'], 'white')
+
+            click.echo(f'{r["id"]:>4} {r["priority"]:>4} ', nl=False)
+            click.secho(f'{type_name:<8} ', fg=type_color, nl=False)
+            click.echo(f'{r["rule_name"][:18]:<20} {(r["target_field"] or "-")[:13]:<15} {r["created_by"]:<10}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('update-rule', help='更新规则')
+@click.argument('rule_id', type=int, required=True)
+@click.option('--name', '-n', default=None, help='规则名称')
+@click.option('--source-field', '-s', default=None, help='源字段名')
+@click.option('--target-field', '-t', default=None, help='目标字段名')
+@click.option('--condition', '-c', default=None, help='条件表达式')
+@click.option('--replacement', '-r', default=None, help='替换值')
+@click.option('--fill-value', '-f', default=None, help='填补值')
+@click.option('--mapping', '-m', default=None, help='映射数据JSON')
+@click.option('--priority', '-p', default=None, type=int, help='优先级')
+@click.option('--active/--inactive', default=None, help='激活/停用规则')
+@click.option('--by', '-u', default='cli', help='操作人')
+def sandbox_update_rule(rule_id, name, source_field, target_field, condition,
+                        replacement, fill_value, mapping, priority, active, by):
+    """
+    更新规则
+
+    RULE_ID: 规则ID
+    """
+    try:
+        mapping_data = None
+        if mapping:
+            try:
+                mapping_data = json.loads(mapping)
+            except json.JSONDecodeError:
+                raise ValueError(f'映射数据JSON格式错误: {mapping}')
+
+        click.echo(f'📝 正在更新规则 #{rule_id}...')
+
+        rule = sandbox_manager.update_rule(
+            rule_id=rule_id,
+            rule_name=name,
+            source_field=source_field,
+            target_field=target_field,
+            condition=condition,
+            replacement=replacement,
+            fill_value=fill_value,
+            mapping_data=mapping_data,
+            priority=priority,
+            is_active=active,
+            operator=by
+        )
+
+        click.secho(f'✅ 规则更新成功', fg='green', bold=True)
+        click.echo(f'  规则ID: {rule["id"]}')
+        click.echo(f'  规则名称: {rule["rule_name"]}')
+        click.echo(f'  状态: {"激活" if rule["is_active"] else "停用"}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('delete-rule', help='删除规则')
+@click.argument('rule_id', type=int, required=True)
+@click.option('--by', '-u', default='cli', help='操作人')
+def sandbox_delete_rule(rule_id, by):
+    """
+    删除规则
+
+    RULE_ID: 规则ID
+    """
+    try:
+        click.echo(f'🗑️  正在删除规则 #{rule_id}...')
+        sandbox_manager.delete_rule(rule_id, operator=by)
+
+        click.secho(f'✅ 规则已删除', fg='green', bold=True)
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('run-trial', help='执行试跑')
+@click.argument('sandbox_id', required=True)
+@click.option('--by', '-u', default='cli', help='操作人')
+def sandbox_run_trial(sandbox_id, by):
+    """
+    执行试跑，预览规则影响
+
+    SANDBOX_ID: 沙盒ID或沙盒编号
+    """
+    try:
+        click.echo(f'🧪 正在执行试跑...')
+
+        trial = sandbox_manager.run_trial(sandbox_id, operator=by)
+
+        status_color = {'completed': 'green', 'failed': 'red', 'running': 'cyan'}
+        color = status_color.get(trial['status'], 'white')
+
+        click.secho(f'✅ 试跑完成', fg='green', bold=True)
+        click.echo(f'  试跑ID: {trial["id"]}')
+        click.echo(f'  试跑编号: {trial["trial_no"]}')
+        click.secho(f'  状态: {trial["status"]}', fg=color)
+        click.echo(f'  总行数: {trial["total_rows"]}')
+        click.secho(f'  影响行数: {trial["affected_rows"]}', fg='yellow')
+        click.echo(f'  未变化: {trial["unchanged_rows"]}')
+        if trial['error_count'] > 0:
+            click.secho(f'  错误: {trial["error_count"]}', fg='red')
+        click.echo(f'  执行人: {trial["executed_by"]}')
+        click.echo(f'  执行时间: {trial["executed_at"]}')
+
+        if trial.get('summary'):
+            s = trial['summary']
+            click.echo(f'\n📊 试跑摘要:')
+            click.echo(f'  应用规则数: {s.get("rules_applied", 0)}')
+            click.echo(f'  处理样例数: {s.get("samples_processed", 0)}')
+
+        if trial['affected_rows'] > 0:
+            click.echo()
+            click.secho(f'💡 提示: 使用 "sandbox trial-results {trial["id"]}" 查看详细差异', fg='cyan')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('trials', help='列出试跑记录')
+@click.argument('sandbox_id', required=True)
+@click.option('--limit', '-n', default=10, help='显示数量')
+def sandbox_trials(sandbox_id, limit):
+    """
+    列出试跑记录
+
+    SANDBOX_ID: 沙盒ID或沙盒编号
+    """
+    try:
+        trials = sandbox_manager.list_trials(sandbox_id, limit=limit)
+
+        click.echo(f'📊 试跑记录 (共 {len(trials)} 次):')
+        click.echo('-' * 100)
+        click.echo(f'{"ID":>4} {"状态":<8} {"总行数":>6} {"影响":>6} {"未变":>6} {"错误":>6} {"执行人":<10} {"执行时间":<20}')
+        click.echo('-' * 100)
+
+        for t in trials:
+            status_color = {'completed': 'green', 'failed': 'red', 'running': 'cyan'}
+            color = status_color.get(t['status'], 'white')
+
+            click.echo(f'{t["id"]:>4} ', nl=False)
+            click.secho(f'{t["status"]:<8} ', fg=color, nl=False)
+            click.echo(f'{t["total_rows"]:>6} {t["affected_rows"]:>6} {t["unchanged_rows"]:>6} {t["error_count"]:>6} {t["executed_by"]:<10} {t["executed_at"][:19] if t["executed_at"] else "":<20}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('trial-results', help='查看试跑结果详情')
+@click.argument('trial_id', type=int, required=True)
+@click.option('--limit', '-n', default=20, help='显示差异数量')
+def sandbox_trial_results(trial_id, limit):
+    """
+    查看试跑结果详情
+
+    TRIAL_ID: 试跑ID
+    """
+    try:
+        trial = sandbox_manager.get_trial(trial_id, include_results=True, limit_results=limit)
+        if not trial:
+            raise SandboxTrialError(f'试跑不存在: {trial_id}')
+
+        click.echo(f'📊 试跑结果详情 #{trial_id}')
+        click.echo('=' * 80)
+        click.echo(f'  试跑编号: {trial["trial_no"]}')
+        click.echo(f'  状态: {trial["status"]}')
+        click.echo(f'  总行数: {trial["total_rows"]}')
+        click.echo(f'  影响行数: {trial["affected_rows"]}')
+        click.echo(f'  未变化: {trial["unchanged_rows"]}')
+        click.echo(f'  错误: {trial["error_count"]}')
+
+        if trial.get('by_change_type'):
+            click.echo(f'\n📈 按变更类型统计:')
+            for ct, count in trial['by_change_type'].items():
+                ct_name = {'modified': '修改', 'added': '新增', 'deleted': '删除', 'error': '错误'}.get(ct, ct)
+                click.echo(f'  {ct_name}: {count} 处')
+
+        if trial.get('results'):
+            click.echo(f'\n🔍 详细差异 (显示前 {min(limit, len(trial["results"]))} 条):')
+            click.echo('-' * 80)
+            click.echo(f'{"行号":>4} {"类型":<6} {"字段":<15} {"旧值":<20} {"新值":<20}')
+            click.echo('-' * 80)
+
+            for r in trial['results']:
+                ct_name = {'modified': '修改', 'added': '新增', 'deleted': '删除', 'error': '错误'}.get(r['change_type'], r['change_type'])
+                ct_color = {'modified': 'yellow', 'added': 'green', 'deleted': 'red', 'error': 'red'}.get(r['change_type'], 'white')
+
+                old_val = str(r['old_value'])[:18] if r['old_value'] is not None else ''
+                new_val = str(r['new_value'])[:18] if r['new_value'] is not None else ''
+
+                click.echo(f'{r["row_index"]:>4} ', nl=False)
+                click.secho(f'{ct_name:<6} ', fg=ct_color, nl=False)
+                click.echo(f'{(r["field_name"] or "")[:13]:<15} {old_val:<20} {new_val:<20}')
+
+        click.echo()
+        click.secho(f'💡 提示: 使用 "sandbox promote <sandbox_id> --trial {trial_id}" 将试跑提升为正式修正', fg='cyan')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('promote', help='提升试跑为正式修正')
+@click.argument('sandbox_id', required=True)
+@click.option('--trial', '-t', type=int, required=True, help='试跑ID')
+@click.option('--target-batch', '-b', default=None, help='目标批次ID或批次号（默认使用沙盒关联批次）')
+@click.option('--force', '-f', is_flag=True, help='强制应用，忽略冲突')
+@click.option('--by', '-u', default='cli', help='操作人')
+def sandbox_promote(sandbox_id, trial, target_batch, force, by):
+    """
+    提升试跑为正式修正
+
+    SANDBOX_ID: 沙盒ID或沙盒编号
+    """
+    try:
+        click.echo(f'🚀 正在将试跑 #{trial} 提升为正式修正...')
+
+        if force:
+            click.secho('⚠️  警告: 使用 --force 将强制覆盖冲突数据', fg='yellow')
+
+        promotion = sandbox_manager.promote_to_production(
+            sandbox_id_or_no=sandbox_id,
+            trial_id=trial,
+            target_batch_id=target_batch,
+            force=force,
+            operator=by
+        )
+
+        click.secho(f'✅ 修正已应用', fg='green', bold=True)
+        click.echo(f'  提升编号: {promotion["promotion_no"]}')
+        click.echo(f'  目标批次: {promotion["target_batch_id"]}')
+        click.echo(f'  应用行数: {promotion["applied_rows"]}')
+        if promotion['conflict_count'] > 0:
+            click.secho(f'  冲突数量: {promotion["conflict_count"]} (已强制覆盖)', fg='yellow')
+        click.echo(f'  操作人: {promotion["applied_by"]}')
+        click.echo(f'  应用时间: {promotion["applied_at"]}')
+
+        click.echo()
+        click.secho(f'💡 提示: 使用 "sandbox rollback-promotion {promotion["id"]}" 可回滚此操作', fg='cyan')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('promotions', help='列出提升记录')
+@click.option('--sandbox-id', '-s', default=None, help='按沙盒过滤')
+@click.option('--limit', '-n', default=10, help='显示数量')
+def sandbox_promotions(sandbox_id, limit):
+    """列出提升记录"""
+    try:
+        promotions = sandbox_manager.list_promotions(sandbox_id_or_no=sandbox_id, limit=limit)
+
+        click.echo(f'🚀 提升记录 (共 {len(promotions)} 条):')
+        click.echo('-' * 100)
+        click.echo(f'{"ID":>4} {"状态":<10} {"沙盒ID":>6} {"批次":>6} {"应用行":>6} {"冲突":>6} {"操作人":<10} {"时间":<20}')
+        click.echo('-' * 100)
+
+        for p in promotions:
+            status_color = {'applied': 'green', 'failed': 'red', 'applying': 'cyan'}
+            color = status_color.get(p['status'], 'white')
+
+            status_name = p['status']
+            if p['is_rolled_back']:
+                status_name = '已回滚'
+                color = 'red'
+
+            click.echo(f'{p["id"]:>4} ', nl=False)
+            click.secho(f'{status_name:<10} ', fg=color, nl=False)
+            click.echo(f'{p["sandbox_id"]:>6} {p["target_batch_id"] or "-":>6} {p["applied_rows"]:>6} {p["conflict_count"]:>6} {p["applied_by"]:<10} {p["applied_at"][:19] if p["applied_at"] else "":<20}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('rollback-promotion', help='回滚提升记录')
+@click.argument('promotion_id', type=int, required=True)
+@click.option('--reason', '-r', required=True, help='回滚原因')
+@click.option('--by', '-u', default='cli', help='操作人')
+def sandbox_rollback_promotion(promotion_id, reason, by):
+    """
+    回滚提升记录
+
+    PROMOTION_ID: 提升记录ID
+    """
+    try:
+        click.echo(f'⏪ 正在回滚提升记录 #{promotion_id}...')
+
+        promotion = sandbox_manager.rollback_promotion(
+            promotion_id=promotion_id,
+            reason=reason,
+            operator=by
+        )
+
+        click.secho(f'✅ 回滚完成', fg='green', bold=True)
+        click.echo(f'  提升编号: {promotion["promotion_no"]}')
+        click.echo(f'  回滚原因: {reason}')
+        click.echo(f'  回滚人: {promotion["rolled_back_by"]}')
+        click.echo(f'  回滚时间: {promotion["rolled_back_at"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('logs', help='查看操作日志')
+@click.option('--sandbox-id', '-s', default=None, help='按沙盒过滤')
+@click.option('--operation', '-o', default=None, help='按操作类型过滤')
+@click.option('--limit', '-n', default=50, help='显示数量')
+def sandbox_logs(sandbox_id, operation, limit):
+    """查看操作日志"""
+    try:
+        logs = sandbox_manager.list_logs(
+            sandbox_id_or_no=sandbox_id,
+            operation=operation,
+            limit=limit
+        )
+
+        filter_info = []
+        if sandbox_id:
+            filter_info.append(f'沙盒: {sandbox_id}')
+        if operation:
+            filter_info.append(f'操作: {operation}')
+        filter_str = f' ({", ".join(filter_info)})' if filter_info else ''
+
+        click.echo(f'📜 操作日志{filter_str} (共 {len(logs)} 条):')
+        click.echo('-' * 100)
+        click.echo(f'{"ID":>4} {"操作":<12} {"沙盒ID":>6} {"操作人":<10} {"时间":<20} {"详情"}')
+        click.echo('-' * 100)
+
+        for log in logs:
+            op_name = {
+                'create': '创建',
+                'update': '更新',
+                'delete': '删除',
+                'import_sample': '导入样例',
+                'add_rule': '添加规则',
+                'update_rule': '更新规则',
+                'delete_rule': '删除规则',
+                'run_trial': '执行试跑',
+                'promote': '提升',
+                'rollback': '回滚',
+                'import_package': '导入包',
+                'export_package': '导出包',
+            }.get(log['operation'], log['operation'])
+            op_color = {
+                'create': 'green',
+                'update': 'yellow',
+                'delete': 'red',
+                'import_sample': 'cyan',
+                'add_rule': 'green',
+                'update_rule': 'yellow',
+                'delete_rule': 'red',
+                'run_trial': 'cyan',
+                'promote': 'green',
+                'rollback': 'red',
+                'import_package': 'cyan',
+                'export_package': 'magenta',
+            }.get(log['operation'], 'white')
+
+            details_str = ''
+            if log.get('details'):
+                details_str = str(log['details'])[:40]
+
+            click.echo(f'{log["id"]:>4} ', nl=False)
+            click.secho(f'{op_name:<12} ', fg=op_color, nl=False)
+            click.echo(f'{log["sandbox_id"] or "-":>6} {log["operator"]:<10} {log["created_at"][:19] if log["created_at"] else "":<20} {details_str}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('export', help='导出沙盒包')
+@click.argument('sandbox_id', required=True)
+@click.option('--output', '-o', default=None, help='输出文件路径')
+def sandbox_export(sandbox_id, output):
+    """
+    导出沙盒包（包含样例、规则、试跑记录、操作日志）
+
+    SANDBOX_ID: 沙盒ID或沙盒编号
+    """
+    try:
+        click.echo(f'📤 正在导出沙盒包...')
+
+        output_path = sandbox_manager.export_sandbox_package(
+            sandbox_id_or_no=sandbox_id,
+            output_path=output
+        )
+
+        click.secho(f'✅ 沙盒包导出成功', fg='green', bold=True)
+        click.echo(f'  输出路径: {output_path}')
+
+        click.echo()
+        click.secho(f'💡 提示: 使用 "sandbox import {output_path}" 可在其他环境复现此沙盒', fg='cyan')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@sandbox.command('import', help='导入沙盒包')
+@click.argument('file_path', type=click.Path(exists=True, readable=True))
+@click.option('--rename', '-r', default=None, help='重命名沙盒')
+@click.option('--by', '-u', default='cli', help='操作人')
+def sandbox_import(file_path, rename, by):
+    """
+    导入沙盒包
+
+    FILE_PATH: 沙盒包ZIP文件路径
+    """
+    try:
+        action = '导入'
+        if rename:
+            click.echo(f'📥 正在{action}沙盒包，将重命名为 "{rename}"...')
+        else:
+            click.echo(f'📥 正在{action}沙盒包...')
+
+        sandbox = sandbox_manager.import_sandbox_package(
+            file_path=file_path,
+            rename=rename,
+            operator=by
+        )
+
+        click.secho(f'✅ 沙盒包{action}成功', fg='green', bold=True)
+        click.echo(f'  沙盒ID: {sandbox["id"]}')
+        click.echo(f'  沙盒编号: {sandbox["sandbox_no"]}')
+        click.echo(f'  名称: {sandbox["name"]}')
+        click.echo(f'  样例数据: {sandbox.get("sample_count", 0)} 份')
+        click.echo(f'  规则: {sandbox.get("rule_count", 0)} 条')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@cli.command('test-sandbox', help='运行沙盒模块测试')
+def test_sandbox():
+    """运行沙盒模块完整测试套件"""
+    try:
+        click.echo('🧪 开始运行沙盒模块测试...')
+        click.echo()
+
+        success = sandbox_test_module.run_tests()
+
+        if success:
+            click.echo()
+            click.secho('🎉 所有测试通过！', fg='green', bold=True)
+        else:
+            click.echo()
+            click.secho('⚠️  部分测试失败，请检查输出', fg='yellow', bold=True)
+
+        sys.exit(0 if success else 1)
 
     except Exception as e:
         CliErrorHandler.handle_error(e)

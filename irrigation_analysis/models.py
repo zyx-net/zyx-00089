@@ -273,3 +273,177 @@ class AnomalyReviewHistory(Base):
     )
 
     anomaly = relationship('Anomaly', backref='review_history')
+
+
+class Sandbox(Base):
+    """数据修正规则沙盒"""
+    __tablename__ = 'sandboxes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sandbox_no = Column(String(50), unique=True, nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    description = Column(String(500))
+    source_dataset = Column(String(100))
+    source_batch_id = Column(Integer, ForeignKey('batches.id'))
+    status = Column(String(20), default='draft', index=True)
+    created_by = Column(String(50), default='cli')
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    last_trial_id = Column(Integer)
+
+    __table_args__ = (
+        Index('idx_sandbox_status', 'status', 'created_at'),
+    )
+
+
+class SandboxSample(Base):
+    """沙盒样例数据"""
+    __tablename__ = 'sandbox_samples'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sandbox_id = Column(Integer, ForeignKey('sandboxes.id'), nullable=False, index=True)
+    sample_name = Column(String(200), nullable=False)
+    source_type = Column(String(20), nullable=False)
+    source_file = Column(String(500))
+    row_count = Column(Integer, default=0)
+    sample_data = Column(Text, nullable=False)
+    created_by = Column(String(50), default='cli')
+    created_at = Column(DateTime, default=datetime.now)
+
+    sandbox = relationship('Sandbox', backref='samples')
+
+
+class SandboxRule(Base):
+    """沙盒修正规则"""
+    __tablename__ = 'sandbox_rules'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sandbox_id = Column(Integer, ForeignKey('sandboxes.id'), nullable=False, index=True)
+    rule_type = Column(String(30), nullable=False, index=True)
+    rule_name = Column(String(200), nullable=False)
+    source_field = Column(String(100))
+    target_field = Column(String(100))
+    condition = Column(Text)
+    replacement = Column(Text)
+    fill_value = Column(String(500))
+    mapping_data = Column(Text)
+    priority = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    created_by = Column(String(50), default='cli')
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    sandbox = relationship('Sandbox', backref='rules')
+
+    __table_args__ = (
+        Index('idx_sandbox_rule_type', 'sandbox_id', 'rule_type'),
+    )
+
+
+class SandboxTrial(Base):
+    """沙盒试跑记录"""
+    __tablename__ = 'sandbox_trials'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trial_no = Column(String(50), unique=True, nullable=False)
+    sandbox_id = Column(Integer, ForeignKey('sandboxes.id'), nullable=False, index=True)
+    status = Column(String(20), default='pending', index=True)
+    total_rows = Column(Integer, default=0)
+    affected_rows = Column(Integer, default=0)
+    unchanged_rows = Column(Integer, default=0)
+    error_count = Column(Integer, default=0)
+    summary = Column(Text)
+    executed_by = Column(String(50), default='cli')
+    executed_at = Column(DateTime, default=datetime.now, index=True)
+    completed_at = Column(DateTime)
+
+    sandbox = relationship('Sandbox', backref='trials')
+
+
+class SandboxTrialResult(Base):
+    """沙盒试跑结果详情"""
+    __tablename__ = 'sandbox_trial_results'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trial_id = Column(Integer, ForeignKey('sandbox_trials.id'), nullable=False, index=True)
+    sample_id = Column(Integer, ForeignKey('sandbox_samples.id'), index=True)
+    row_index = Column(Integer)
+    change_type = Column(String(20), index=True)
+    field_name = Column(String(100))
+    old_value = Column(Text)
+    new_value = Column(Text)
+    rule_id = Column(Integer, ForeignKey('sandbox_rules.id'))
+    row_data_before = Column(Text)
+    row_data_after = Column(Text)
+
+    trial = relationship('SandboxTrial', backref='results')
+    rule = relationship('SandboxRule')
+    sample = relationship('SandboxSample')
+
+    __table_args__ = (
+        Index('idx_trial_result', 'trial_id', 'change_type'),
+    )
+
+
+class SandboxPromotion(Base):
+    """沙盒提升为正式修正记录"""
+    __tablename__ = 'sandbox_promotions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    promotion_no = Column(String(50), unique=True, nullable=False)
+    sandbox_id = Column(Integer, ForeignKey('sandboxes.id'), nullable=False, index=True)
+    trial_id = Column(Integer, ForeignKey('sandbox_trials.id'), nullable=False)
+    target_batch_id = Column(Integer, ForeignKey('batches.id'), index=True)
+    status = Column(String(20), default='pending', index=True)
+    conflict_count = Column(Integer, default=0)
+    conflict_details = Column(Text)
+    applied_rows = Column(Integer, default=0)
+    applied_by = Column(String(50), default='cli')
+    applied_at = Column(DateTime, default=datetime.now, index=True)
+    rollback_note = Column(String(500))
+    is_rolled_back = Column(Boolean, default=False)
+    rolled_back_at = Column(DateTime)
+    rolled_back_by = Column(String(50))
+
+    sandbox = relationship('Sandbox')
+    trial = relationship('SandboxTrial')
+    target_batch = relationship('Batch')
+
+
+class SandboxConflict(Base):
+    """沙盒冲突检测记录"""
+    __tablename__ = 'sandbox_conflicts'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    promotion_id = Column(Integer, ForeignKey('sandbox_promotions.id'), nullable=False, index=True)
+    conflict_type = Column(String(30), nullable=False)
+    target_record_id = Column(Integer)
+    target_table = Column(String(50))
+    field_name = Column(String(100))
+    existing_value = Column(Text)
+    proposed_value = Column(Text)
+    last_modified_at = Column(DateTime)
+    last_modified_by = Column(String(50))
+    resolution = Column(String(20), default='pending')
+    resolved_at = Column(DateTime)
+    resolved_by = Column(String(50))
+
+    promotion = relationship('SandboxPromotion', backref='conflicts')
+
+
+class SandboxLog(Base):
+    """沙盒操作日志"""
+    __tablename__ = 'sandbox_logs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sandbox_id = Column(Integer, ForeignKey('sandboxes.id'), index=True)
+    operation = Column(String(30), nullable=False, index=True)
+    operator = Column(String(50), default='cli')
+    details = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    sandbox = relationship('Sandbox', backref='logs')
+
+    __table_args__ = (
+        Index('idx_sandbox_log_op', 'sandbox_id', 'operation', 'created_at'),
+    )

@@ -15,6 +15,7 @@ from .importer import DataImporter
 from .rules import RuleEngine
 from .sample_data import sample_data_generator
 from .config import OUTPUT_DIR, DATA_DIR, EXCEPTION_TYPES
+from .sandbox_manager import sandbox_manager, SandboxError
 
 app = Flask(__name__)
 app.secret_key = 'irrigation-analysis-secret-key'
@@ -28,6 +29,26 @@ init_db()
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def render_page(child_template, **context):
+    """渲染页面，正确处理模板继承"""
+    import re
+
+    title_match = re.search(r'{% block title %}(.*?){% endblock %}', child_template, re.DOTALL)
+    content_match = re.search(r'{% block content %}(.*?){% endblock %}', child_template, re.DOTALL)
+    scripts_match = re.search(r'{% block scripts %}(.*?){% endblock %}', child_template, re.DOTALL)
+
+    title = title_match.group(1).strip() if title_match else ''
+    content = content_match.group(1).strip() if content_match else ''
+    scripts = scripts_match.group(1).strip() if scripts_match else ''
+
+    template = BASE_TEMPLATE
+    template = template.replace('{% block title %}农田灌溉用水异常分析系统{% endblock %}', title)
+    template = template.replace('{% block content %}{% endblock %}', content)
+    template = template.replace('{% block scripts %}{% endblock %}', scripts)
+
+    return render_template_string(template, **context)
 
 
 BASE_TEMPLATE = """
@@ -99,6 +120,11 @@ BASE_TEMPLATE = """
                             <i class="bi bi-file-earmark-bar-graph"></i> 报告中心
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'sandboxes' %}active{% endif %}" href="{{ url_for('sandboxes') }}">
+                            <i class="bi bi-flask"></i> 沙盒管理
+                        </a>
+                    </li>
                 </ul>
             </div>
         </div>
@@ -130,8 +156,7 @@ BASE_TEMPLATE = """
 def dashboard():
     """仪表盘"""
     summary = report_generator.generate_summary(use_cache=False)
-    return render_template_string(BASE_TEMPLATE + """
-{% extends self %}
+    return render_page("""
 {% block title %}仪表盘 - 农田灌溉用水异常分析系统{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -300,8 +325,7 @@ def anomalies():
 
     batches = batch_manager.list_batches()
 
-    return render_template_string(BASE_TEMPLATE + """
-{% extends self %}
+    return render_page("""
 {% block title %}异常管理 - 农田灌溉用水异常分析系统{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -864,8 +888,7 @@ def batches():
     batch_type = request.args.get('type')
     batch_list = batch_manager.list_batches(batch_type=batch_type, limit=100)
 
-    return render_template_string(BASE_TEMPLATE + """
-{% extends self %}
+    return render_page("""
 {% block title %}批次管理 - 农田灌溉用水异常分析系统{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -1008,8 +1031,7 @@ def rollbacks():
     """回滚记录"""
     rollback_list = rollback_manager.list_rollbacks(limit=100)
 
-    return render_template_string(BASE_TEMPLATE + """
-{% extends self %}
+    return render_page("""
 {% block title %}回滚记录 - 农田灌溉用水异常分析系统{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -1071,8 +1093,7 @@ def rollbacks():
 @app.route('/import')
 def import_page():
     """数据导入页面"""
-    return render_template_string(BASE_TEMPLATE + """
-{% extends self %}
+    return render_page("""
 {% block title %}数据导入 - 农田灌溉用水异常分析系统{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -1266,8 +1287,7 @@ def reports():
     """报告中心"""
     summary = report_generator.generate_summary(use_cache=False)
 
-    return render_template_string(BASE_TEMPLATE + """
-{% extends self %}
+    return render_page("""
 {% block title %}报告中心 - 农田灌溉用水异常分析系统{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -1465,6 +1485,1326 @@ def api_summary():
     return jsonify({
         'success': True,
         'data': summary
+    })
+
+
+@app.route('/sandboxes')
+def sandboxes():
+    """沙盒列表页"""
+    sandboxes = sandbox_manager.list_sandboxes()
+    return render_page("""
+{% block title %}沙盒管理 - 农田灌溉用水异常分析系统{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-flask"></i> 沙盒管理</h2>
+    <div>
+        <button class="btn btn-success me-2" onclick="showCreateModal()">
+            <i class="bi bi-plus-circle"></i> 新建沙盒
+        </button>
+        <button class="btn btn-outline-primary me-2" onclick="showImportModal()">
+            <i class="bi bi-upload"></i> 导入沙盒包
+        </button>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>状态</th>
+                        <th>名称</th>
+                        <th>描述</th>
+                        <th>样例</th>
+                        <th>规则</th>
+                        <th>试跑</th>
+                        <th>创建人</th>
+                        <th>创建时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in sandboxes %}
+                    <tr>
+                        <td>{{ s.id }}</td>
+                        <td>
+                            {% set status_map = {'draft': ('草稿', 'bg-secondary'), 'testing': ('测试中', 'bg-info'), 'approved': ('已审批', 'bg-primary'), 'applied': ('已应用', 'bg-success'), 'archived': ('已归档', 'bg-warning'), 'rolled_back': ('已回滚', 'bg-danger')} %}
+                            {% set status = status_map.get(s.status, (s.status, 'bg-secondary')) %}
+                            <span class="badge {{ status[1] }}">{{ status[0] }}</span>
+                        </td>
+                        <td><strong>{{ s.name }}</strong></td>
+                        <td>{{ s.description[:30] if s.description else '-' }}</td>
+                        <td><span class="badge bg-info">{{ s.get('sample_count', 0) }}</span></td>
+                        <td><span class="badge bg-primary">{{ s.get('rule_count', 0) }}</span></td>
+                        <td><span class="badge bg-secondary">{{ s.get('trial_count', 0) }}</span></td>
+                        <td>{{ s.created_by }}</td>
+                        <td><small class="text-muted">{{ s.created_at[:19] if s.created_at else '' }}</small></td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <a href="{{ url_for('sandbox_detail', sandbox_id=s.id) }}" class="btn btn-outline-primary" title="查看详情">
+                                    <i class="bi bi-eye"></i>
+                                </a>
+                                <a href="{{ url_for('sandbox_export', sandbox_id=s.id) }}" class="btn btn-outline-success" title="导出">
+                                    <i class="bi bi-download"></i>
+                                </a>
+                                <button class="btn btn-outline-danger" onclick="confirmDelete({{ s.id }}, '{{ s.name }}')" title="删除">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="10" class="text-center text-muted py-4">
+                            <i class="bi bi-inbox" style="font-size: 48px;"></i>
+                            <p class="mt-2">暂无沙盒，点击"新建沙盒"创建第一个沙盒</p>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="createModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ url_for('sandbox_create') }}">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-plus-circle"></i> 新建沙盒</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">沙盒名称 <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" name="name" required placeholder="例如：6月水表读数修正">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">描述</label>
+                        <textarea class="form-control" name="description" rows="3" placeholder="描述这个沙盒的用途..."></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">创建人</label>
+                        <input type="text" class="form-control" name="by" value="web">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">创建</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="importModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ url_for('sandbox_import_package') }}" enctype="multipart/form-data">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-upload"></i> 导入沙盒包</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">选择沙盒包文件 <span class="text-danger">*</span></label>
+                        <input type="file" class="form-control" name="file" accept=".zip" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">重命名（可选）</label>
+                        <input type="text" class="form-control" name="rename" placeholder="留空则使用原名称">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">导入</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function showCreateModal() {
+    new bootstrap.Modal(document.getElementById('createModal')).show();
+}
+function showImportModal() {
+    new bootstrap.Modal(document.getElementById('importModal')).show();
+}
+function confirmDelete(id, name) {
+    if (confirm('确定要删除沙盒 "' + name + '" 吗？此操作不可撤销！')) {
+        location.href = "{{ url_for('sandbox_delete', sandbox_id=0) }}".replace('/0', '/' + id);
+    }
+}
+</script>
+{% endblock %}
+""", sandboxes=sandboxes)
+
+
+@app.route('/sandboxes/create', methods=['POST'])
+def sandbox_create():
+    """创建沙盒"""
+    try:
+        name = request.form.get('name', '').strip()
+        description = request.form.get('description', '').strip()
+        by = request.form.get('by', 'web')
+
+        if not name:
+            flash('沙盒名称不能为空', 'danger')
+            return redirect(url_for('sandboxes'))
+
+        sandbox = sandbox_manager.create_sandbox(
+            name=name,
+            description=description,
+            created_by=by
+        )
+
+        flash(f'沙盒 "{name}" 创建成功', 'success')
+        return redirect(url_for('sandbox_detail', sandbox_id=sandbox['id']))
+
+    except Exception as e:
+        flash(f'创建失败: {str(e)}', 'danger')
+        return redirect(url_for('sandboxes'))
+
+
+@app.route('/sandboxes/<sandbox_id>/delete')
+def sandbox_delete(sandbox_id):
+    """删除沙盒"""
+    try:
+        sandbox = sandbox_manager.get_sandbox(sandbox_id)
+        if not sandbox:
+            flash('沙盒不存在', 'danger')
+            return redirect(url_for('sandboxes'))
+
+        sandbox_manager.delete_sandbox(sandbox_id, operator='web')
+        flash(f'沙盒 "{sandbox["name"]}" 已删除', 'success')
+
+    except Exception as e:
+        flash(f'删除失败: {str(e)}', 'danger')
+
+    return redirect(url_for('sandboxes'))
+
+
+@app.route('/sandboxes/<sandbox_id>')
+def sandbox_detail(sandbox_id):
+    """沙盒详情页"""
+    sandbox = sandbox_manager.get_sandbox(sandbox_id, include_details=True)
+    if not sandbox:
+        flash('沙盒不存在', 'danger')
+        return redirect(url_for('sandboxes'))
+
+    samples = sandbox_manager.list_samples(sandbox_id)
+    rules = sandbox_manager.list_rules(sandbox_id)
+    trials = sandbox_manager.list_trials(sandbox_id)
+
+    return render_page("""
+{% block title %}{{ sandbox.name }} - 沙盒详情{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb mb-1">
+                <li class="breadcrumb-item"><a href="{{ url_for('sandboxes') }}">沙盒管理</a></li>
+                <li class="breadcrumb-item active" aria-current="page">{{ sandbox.name }}</li>
+            </ol>
+        </nav>
+        <h2 class="mb-0"><i class="bi bi-flask"></i> {{ sandbox.name }}</h2>
+    </div>
+    <div>
+        <button class="btn btn-outline-secondary me-2" onclick="location.href='{{ url_for('sandboxes') }}'">
+            <i class="bi bi-arrow-left"></i> 返回列表
+        </button>
+        <button class="btn btn-primary me-2" onclick="showSampleModal()">
+            <i class="bi bi-upload"></i> 导入样例
+        </button>
+        <button class="btn btn-success me-2" onclick="showRuleModal()">
+            <i class="bi bi-plus-circle"></i> 添加规则
+        </button>
+        {% if rules and samples %}
+        <button class="btn btn-warning me-2" onclick="runTrial()">
+            <i class="bi bi-play-circle"></i> 执行试跑
+        </button>
+        {% endif %}
+        <button class="btn btn-info" onclick="location.href='{{ url_for('sandbox_export', sandbox_id=sandbox.id) }}'">
+            <i class="bi bi-download"></i> 导出
+        </button>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-value text-info">{{ sandbox.get('sample_count', 0) }}</div>
+            <div class="stat-label">样例数据</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-value text-primary">{{ sandbox.get('rule_count', 0) }}</div>
+            <div class="stat-label">激活规则</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-value text-secondary">{{ sandbox.get('trial_count', 0) }}</div>
+            <div class="stat-label">试跑次数</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-value text-muted">{{ sandbox.get('log_count', 0) }}</div>
+            <div class="stat-label">操作日志</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <strong>沙盒编号：</strong> {{ sandbox.sandbox_no }}<br>
+                <strong>状态：</strong>
+                {% set status_map = {'draft': ('草稿', 'bg-secondary'), 'testing': ('测试中', 'bg-info'), 'approved': ('已审批', 'bg-primary'), 'applied': ('已应用', 'bg-success'), 'archived': ('已归档', 'bg-warning'), 'rolled_back': ('已回滚', 'bg-danger')} %}
+                {% set status = status_map.get(sandbox.status, (sandbox.status, 'bg-secondary')) %}
+                <span class="badge {{ status[1] }}">{{ status[0] }}</span><br>
+                <strong>创建人：</strong> {{ sandbox.created_by }}<br>
+                <strong>创建时间：</strong> {{ sandbox.created_at[:19] if sandbox.created_at else '' }}
+            </div>
+            <div class="col-md-6">
+                <strong>描述：</strong> {{ sandbox.description or '无' }}<br>
+                {% if sandbox.get('last_trial') %}
+                <strong>最近试跑：</strong> 影响 {{ sandbox.last_trial.affected_rows }} 行，{{ sandbox.last_trial.total_rows }} 总行
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<ul class="nav nav-tabs mb-4" id="sandboxTabs" role="tablist">
+    <li class="nav-item">
+        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#samples-tab">
+            <i class="bi bi-file-earmark-spreadsheet"></i> 样例数据 ({{ samples|length }})
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#rules-tab">
+            <i class="bi bi-sliders"></i> 修正规则 ({{ rules|length }})
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#trials-tab">
+            <i class="bi bi-bar-chart"></i> 试跑记录 ({{ trials|length }})
+        </button>
+    </li>
+</ul>
+
+<div class="tab-content">
+    <div class="tab-pane fade show active" id="samples-tab">
+        <div class="card">
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>类型</th>
+                                <th>名称</th>
+                                <th>行数</th>
+                                <th>创建人</th>
+                                <th>创建时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for s in samples %}
+                            <tr>
+                                <td>{{ s.id }}</td>
+                                <td>
+                                    {% set type_map = {'parcel': '地块台账', 'meter': '水表读数', 'plan': '灌溉计划', 'weather': '天气补录'} %}
+                                    {{ type_map.get(s.source_type, s.source_type) }}
+                                </td>
+                                <td>{{ s.sample_name }}</td>
+                                <td><span class="badge bg-info">{{ s.row_count }}</span></td>
+                                <td>{{ s.created_by }}</td>
+                                <td><small class="text-muted">{{ s.created_at[:19] if s.created_at else '' }}</small></td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary" onclick="viewSample({{ s.id }})">
+                                        <i class="bi bi-eye"></i> 查看
+                                    </button>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="7" class="text-center text-muted py-4">
+                                    暂无样例数据，点击"导入样例"上传CSV或JSON文件
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-pane fade" id="rules-tab">
+        <div class="card">
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>优先级</th>
+                                <th>类型</th>
+                                <th>名称</th>
+                                <th>目标字段</th>
+                                <th>条件</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in rules %}
+                            <tr>
+                                <td>{{ r.id }}</td>
+                                <td><span class="badge bg-secondary">{{ r.priority }}</span></td>
+                                <td>
+                                    {% set type_map = {'field_mapping': ('字段映射', 'info'), 'missing_fill': ('缺失值填补', 'success'), 'outlier_replace': ('异常值改写', 'warning'), 'custom': ('自定义', 'primary')} %}
+                                    {% set t = type_map.get(r.rule_type, (r.rule_type, 'secondary')) %}
+                                    <span class="badge bg-{{ t[1] }}">{{ t[0] }}</span>
+                                </td>
+                                <td><strong>{{ r.rule_name }}</strong></td>
+                                <td>{{ r.target_field or '-' }}</td>
+                                <td><code class="small">{{ r.condition[:30] if r.condition else '-' }}</code></td>
+                                <td>
+                                    <div class="btn-group btn-group-sm">
+                                        <button class="btn btn-outline-primary" onclick="editRule({{ r.id }})">
+                                            <i class="bi bi-pencil"></i>
+                                        </button>
+                                        <button class="btn btn-outline-danger" onclick="deleteRule({{ r.id }})">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="7" class="text-center text-muted py-4">
+                                    暂无规则，点击"添加规则"创建第一条规则
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-pane fade" id="trials-tab">
+        <div class="card">
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>状态</th>
+                                <th>总行数</th>
+                                <th>影响行数</th>
+                                <th>未变化</th>
+                                <th>错误</th>
+                                <th>执行人</th>
+                                <th>执行时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for t in trials %}
+                            <tr>
+                                <td>{{ t.id }}</td>
+                                <td>
+                                    {% set status_map = {'completed': ('已完成', 'bg-success'), 'failed': ('失败', 'bg-danger'), 'running': ('运行中', 'bg-info')} %}
+                                    {% set s = status_map.get(t.status, (t.status, 'bg-secondary')) %}
+                                    <span class="badge {{ s[1] }}">{{ s[0] }}</span>
+                                </td>
+                                <td>{{ t.total_rows }}</td>
+                                <td><strong class="text-warning">{{ t.affected_rows }}</strong></td>
+                                <td>{{ t.unchanged_rows }}</td>
+                                <td>{% if t.error_count %}<span class="text-danger">{{ t.error_count }}</span>{% else %}0{% endif %}</td>
+                                <td>{{ t.executed_by }}</td>
+                                <td><small class="text-muted">{{ t.executed_at[:19] if t.executed_at else '' }}</small></td>
+                                <td>
+                                    <div class="btn-group btn-group-sm">
+                                        <a href="{{ url_for('trial_results', trial_id=t.id) }}" class="btn btn-outline-primary">
+                                            <i class="bi bi-eye"></i> 查看差异
+                                        </a>
+                                        {% if t.status == 'completed' and t.affected_rows > 0 %}
+                                        <button class="btn btn-outline-success" onclick="promoteTrial({{ t.id }})">
+                                            <i class="bi bi-rocket-takeoff"></i> 提升
+                                        </button>
+                                        {% endif %}
+                                    </div>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="9" class="text-center text-muted py-4">
+                                    暂无试跑记录，请先导入样例和添加规则后执行试跑
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="sampleModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ url_for('sandbox_import_sample', sandbox_id=sandbox.id) }}" enctype="multipart/form-data">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-upload"></i> 导入样例数据</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">数据类型 <span class="text-danger">*</span></label>
+                        <select class="form-select" name="source_type" required>
+                            <option value="meter">水表读数</option>
+                            <option value="parcel">地块台账</option>
+                            <option value="plan">灌溉计划</option>
+                            <option value="weather">天气补录</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">选择文件 <span class="text-danger">*</span></label>
+                        <input type="file" class="form-control" name="file" accept=".csv,.json" required>
+                        <div class="form-text">支持 CSV 和 JSON 格式</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">样例名称（可选）</label>
+                        <input type="text" class="form-control" name="sample_name" placeholder="留空则使用文件名">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">导入</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="ruleModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <form method="POST" action="{{ url_for('sandbox_add_rule', sandbox_id=sandbox.id) }}">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-plus-circle"></i> 添加修正规则</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">规则类型 <span class="text-danger">*</span></label>
+                                <select class="form-select" name="rule_type" id="ruleType" required onchange="updateRuleForm()">
+                                    <option value="field_mapping">字段映射</option>
+                                    <option value="missing_fill">缺失值填补</option>
+                                    <option value="outlier_replace">异常值改写</option>
+                                    <option value="custom">自定义规则</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">优先级</label>
+                                <input type="number" class="form-control" name="priority" value="0">
+                                <div class="form-text">数字越大越先执行</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">规则名称 <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" name="rule_name" required placeholder="例如：修正缺失的操作员">
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3" id="sourceFieldDiv">
+                                <label class="form-label">源字段名</label>
+                                <input type="text" class="form-control" name="source_field" placeholder="例如：操作员姓名">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">目标字段名 <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" name="target_field" required placeholder="例如：operator">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">条件表达式</label>
+                        <input type="text" class="form-control" name="condition" placeholder="例如：value > 1000 或 pd.isna(value)">
+                        <div class="form-text">可用变量：row（当前行数据字典）、value（目标字段值）、pd（pandas模块）</div>
+                    </div>
+                    <div class="mb-3" id="replacementDiv">
+                        <label class="form-label">替换值/表达式</label>
+                        <input type="text" class="form-control" name="replacement" placeholder="例如：100 或 row['其他字段']">
+                    </div>
+                    <div class="mb-3" id="fillValueDiv">
+                        <label class="form-label">填补值</label>
+                        <input type="text" class="form-control" name="fill_value" placeholder="例如：未知操作员">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">映射数据 (JSON)</label>
+                        <input type="text" class="form-control" name="mapping" placeholder='例如：{"旧值1": "新值1", "旧值2": "新值2"}'>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">添加</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function showSampleModal() {
+    new bootstrap.Modal(document.getElementById('sampleModal')).show();
+}
+function showRuleModal() {
+    new bootstrap.Modal(document.getElementById('ruleModal')).show();
+}
+function updateRuleForm() {
+    const type = document.getElementById('ruleType').value;
+    document.getElementById('sourceFieldDiv').style.display = type === 'field_mapping' ? 'block' : 'none';
+    document.getElementById('replacementDiv').style.display = (type === 'outlier_replace' || type === 'custom') ? 'block' : 'none';
+    document.getElementById('fillValueDiv').style.display = type === 'missing_fill' ? 'block' : 'none';
+}
+function runTrial() {
+    if (confirm('确定要执行试跑吗？这将应用所有规则到样例数据上。')) {
+        location.href = "{{ url_for('sandbox_run_trial', sandbox_id=sandbox.id) }}";
+    }
+}
+function promoteTrial(trialId) {
+    location.href = "{{ url_for('promote_confirm', trial_id=0) }}".replace('/0', '/' + trialId);
+}
+function editRule(ruleId) {
+    alert('规则编辑功能请使用CLI命令：python main.py sandbox update-rule ' + ruleId);
+}
+function deleteRule(ruleId) {
+    if (confirm('确定要删除此规则吗？')) {
+        location.href = "{{ url_for('sandbox_delete_rule', sandbox_id=sandbox.id, rule_id=0) }}".replace('/0', '/' + ruleId);
+    }
+}
+function viewSample(sampleId) {
+    window.open("{{ url_for('view_sample', sample_id=0) }}".replace('/0', '/' + sampleId), '_blank');
+}
+updateRuleForm();
+</script>
+{% endblock %}
+""", sandbox=sandbox, samples=samples, rules=rules, trials=trials)
+
+
+@app.route('/sandboxes/<sandbox_id>/import-sample', methods=['POST'])
+def sandbox_import_sample(sandbox_id):
+    """导入样例数据"""
+    try:
+        if 'file' not in request.files:
+            flash('请选择文件', 'danger')
+            return redirect(url_for('sandbox_detail', sandbox_id=sandbox_id))
+
+        file = request.files['file']
+        if file.filename == '':
+            flash('请选择文件', 'danger')
+            return redirect(url_for('sandbox_detail', sandbox_id=sandbox_id))
+
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
+
+            source_type = request.form.get('source_type', 'meter')
+            sample_name = request.form.get('sample_name') or filename
+
+            sandbox_manager.import_sample(
+                sandbox_id_or_no=sandbox_id,
+                file_path=filepath,
+                source_type=source_type,
+                sample_name=sample_name,
+                operator='web'
+            )
+
+            os.remove(filepath)
+            flash('样例数据导入成功', 'success')
+
+    except Exception as e:
+        flash(f'导入失败: {str(e)}', 'danger')
+
+    return redirect(url_for('sandbox_detail', sandbox_id=sandbox_id))
+
+
+@app.route('/sandboxes/<sandbox_id>/add-rule', methods=['POST'])
+def sandbox_add_rule(sandbox_id):
+    """添加规则"""
+    try:
+        rule_type = request.form.get('rule_type', '')
+        rule_name = request.form.get('rule_name', '').strip()
+        source_field = request.form.get('source_field') or None
+        target_field = request.form.get('target_field') or None
+        condition = request.form.get('condition') or None
+        replacement = request.form.get('replacement') or None
+        fill_value = request.form.get('fill_value') or None
+        priority = int(request.form.get('priority', '0'))
+        mapping_str = request.form.get('mapping') or None
+
+        mapping_data = None
+        if mapping_str:
+            import json
+            mapping_data = json.loads(mapping_str)
+
+        if not rule_name:
+            flash('规则名称不能为空', 'danger')
+            return redirect(url_for('sandbox_detail', sandbox_id=sandbox_id))
+
+        sandbox_manager.add_rule(
+            sandbox_id_or_no=sandbox_id,
+            rule_type=rule_type,
+            rule_name=rule_name,
+            source_field=source_field,
+            target_field=target_field,
+            condition=condition,
+            replacement=replacement,
+            fill_value=fill_value,
+            mapping_data=mapping_data,
+            priority=priority,
+            operator='web'
+        )
+
+        flash('规则添加成功', 'success')
+
+    except Exception as e:
+        flash(f'添加失败: {str(e)}', 'danger')
+
+    return redirect(url_for('sandbox_detail', sandbox_id=sandbox_id))
+
+
+@app.route('/sandboxes/<sandbox_id>/delete-rule/<rule_id>')
+def sandbox_delete_rule(sandbox_id, rule_id):
+    """删除规则"""
+    try:
+        sandbox_manager.delete_rule(int(rule_id), operator='web')
+        flash('规则已删除', 'success')
+    except Exception as e:
+        flash(f'删除失败: {str(e)}', 'danger')
+
+    return redirect(url_for('sandbox_detail', sandbox_id=sandbox_id))
+
+
+@app.route('/sandboxes/<sandbox_id>/run-trial')
+def sandbox_run_trial(sandbox_id):
+    """执行试跑"""
+    try:
+        trial = sandbox_manager.run_trial(sandbox_id, operator='web')
+        flash(f'试跑完成，影响 {trial["affected_rows"]} 行', 'success')
+        return redirect(url_for('trial_results', trial_id=trial['id']))
+    except Exception as e:
+        flash(f'试跑失败: {str(e)}', 'danger')
+        return redirect(url_for('sandbox_detail', sandbox_id=sandbox_id))
+
+
+@app.route('/trials/<trial_id>')
+def trial_results(trial_id):
+    """试跑结果详情页"""
+    trial = sandbox_manager.get_trial(trial_id, include_results=True, limit_results=100)
+    if not trial:
+        flash('试跑记录不存在', 'danger')
+        return redirect(url_for('sandboxes'))
+
+    sandbox = sandbox_manager.get_sandbox(trial['sandbox_id'])
+
+    return render_page("""
+{% block title %}试跑结果 - {{ sandbox.name }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb mb-1">
+                <li class="breadcrumb-item"><a href="{{ url_for('sandboxes') }}">沙盒管理</a></li>
+                <li class="breadcrumb-item"><a href="{{ url_for('sandbox_detail', sandbox_id=sandbox.id) }}">{{ sandbox.name }}</a></li>
+                <li class="breadcrumb-item active" aria-current="page">试跑 #{{ trial.id }}</li>
+            </ol>
+        </nav>
+        <h2 class="mb-0"><i class="bi bi-bar-chart"></i> 试跑结果</h2>
+    </div>
+    <div>
+        <button class="btn btn-outline-secondary me-2" onclick="location.href='{{ url_for('sandbox_detail', sandbox_id=sandbox.id) }}'">
+            <i class="bi bi-arrow-left"></i> 返回沙盒
+        </button>
+        {% if trial.status == 'completed' and trial.affected_rows > 0 %}
+        <button class="btn btn-success" onclick="location.href='{{ url_for('promote_confirm', trial_id=trial.id) }}'">
+            <i class="bi bi-rocket-takeoff"></i> 提升为正式修正
+        </button>
+        {% endif %}
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="stat-value">{{ trial.total_rows }}</div>
+            <div class="stat-label">总行数</div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="stat-value text-warning">{{ trial.affected_rows }}</div>
+            <div class="stat-label">影响行数</div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="stat-value text-success">{{ trial.unchanged_rows }}</div>
+            <div class="stat-label">未变化</div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="stat-value text-danger">{{ trial.error_count }}</div>
+            <div class="stat-label">错误</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                <strong>状态：</strong>
+                {% set status_map = {'completed': ('已完成', 'bg-success'), 'failed': ('失败', 'bg-danger'), 'running': ('运行中', 'bg-info')} %}
+                {% set s = status_map.get(trial.status, (trial.status, 'bg-secondary')) %}
+                <span class="badge {{ s[1] }}">{{ s[0] }}</span><br>
+                <strong>执行人：</strong> {{ trial.executed_by }}<br>
+                <strong>执行时间：</strong> {{ trial.executed_at[:19] if trial.executed_at else '' }}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if trial.get('by_change_type') %}
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-pie-chart"></i> 变更类型统计
+    </div>
+    <div class="card-body">
+        <div class="row">
+            {% for ct, count in trial.by_change_type.items() %}
+            {% set ct_map = {'modified': ('修改', 'warning'), 'added': ('新增', 'success'), 'deleted': ('删除', 'danger'), 'error': ('错误', 'danger')} %}
+            {% set c = ct_map.get(ct, (ct, 'secondary')) %}
+            <div class="col-md-3">
+                <div class="d-flex justify-content-between align-items-center p-3 border rounded">
+                    <span class="text-{{ c[1] }}"><i class="bi bi-pencil-square"></i> {{ c[0] }}</span>
+                    <span class="badge bg-{{ c[1] }} fs-6">{{ count }}</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-header">
+        <i class="bi bi-list-check"></i> 详细差异
+        <span class="badge bg-secondary ms-2">显示前 {{ trial.results|length }} 条</span>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>行号</th>
+                        <th>类型</th>
+                        <th>字段</th>
+                        <th>旧值</th>
+                        <th>新值</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in trial.results %}
+                    <tr>
+                        <td>{{ r.row_index }}</td>
+                        <td>
+                            {% set ct_map = {'modified': ('修改', 'warning'), 'added': ('新增', 'success'), 'deleted': ('删除', 'danger'), 'error': ('错误', 'danger')} %}
+                            {% set ct = ct_map.get(r.change_type, (r.change_type, 'secondary')) %}
+                            <span class="badge bg-{{ ct[1] }}">{{ ct[0] }}</span>
+                        </td>
+                        <td><code>{{ r.field_name }}</code></td>
+                        <td class="text-danger"><del>{{ r.old_value }}</del></td>
+                        <td class="text-success"><strong>{{ r.new_value }}</strong></td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-primary" onclick="showRowDiff({{ loop.index0 }})">
+                                <i class="bi bi-eye"></i> 查看行
+                            </button>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="text-center text-muted py-4">
+                            没有差异数据
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+function showRowDiff(index) {
+    const results = {{ trial.results | tojson | safe }};
+    const r = results[index];
+    alert('行 ' + r.row_index + ' 变更详情：\\n\\n变更前：\\n' + JSON.stringify(r.row_data_before, null, 2) + '\\n\\n变更后：\\n' + JSON.stringify(r.row_data_after, null, 2));
+}
+</script>
+{% endblock %}
+""", trial=trial, sandbox=sandbox)
+
+
+@app.route('/promote/<trial_id>/confirm')
+def promote_confirm(trial_id):
+    """提升确认页"""
+    trial = sandbox_manager.get_trial(trial_id)
+    if not trial:
+        flash('试跑记录不存在', 'danger')
+        return redirect(url_for('sandboxes'))
+
+    sandbox = sandbox_manager.get_sandbox(trial['sandbox_id'])
+    batches = batch_manager.list_batches(limit=50)
+
+    return render_page("""
+{% block title %}提升确认 - {{ sandbox.name }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb mb-1">
+                <li class="breadcrumb-item"><a href="{{ url_for('sandboxes') }}">沙盒管理</a></li>
+                <li class="breadcrumb-item"><a href="{{ url_for('sandbox_detail', sandbox_id=sandbox.id) }}">{{ sandbox.name }}</a></li>
+                <li class="breadcrumb-item"><a href="{{ url_for('trial_results', trial_id=trial.id) }}">试跑 #{{ trial.id }}</a></li>
+                <li class="breadcrumb-item active" aria-current="page">提升确认</li>
+            </ol>
+        </nav>
+        <h2 class="mb-0"><i class="bi bi-rocket-takeoff"></i> 提升为正式修正</h2>
+    </div>
+    <div>
+        <button class="btn btn-outline-secondary" onclick="location.href='{{ url_for('trial_results', trial_id=trial.id) }}'">
+            <i class="bi bi-arrow-left"></i> 返回
+        </button>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-7">
+        <div class="card">
+            <div class="card-header bg-warning text-dark">
+                <i class="bi bi-exclamation-triangle"></i> 应用前请确认以下信息
+            </div>
+            <div class="card-body">
+                <h5>影响摘要</h5>
+                <div class="alert alert-info">
+                    <ul class="mb-0">
+                        <li><strong>试跑 #{{ trial.id }}</strong> 将应用以下变更到正式数据</li>
+                        <li>影响行数：<strong class="text-warning">{{ trial.affected_rows }}</strong> 行</li>
+                        <li>总处理行数：{{ trial.total_rows }} 行</li>
+                        <li>未变化：{{ trial.unchanged_rows }} 行</li>
+                        <li>错误：{{ trial.error_count }} 行</li>
+                    </ul>
+                </div>
+
+                <form method="POST" action="{{ url_for('promote_apply', trial_id=trial.id) }}">
+                    <div class="mb-3">
+                        <label class="form-label">目标批次 <span class="text-danger">*</span></label>
+                        <select class="form-select" name="target_batch_id" required>
+                            {% if sandbox.source_batch_id %}
+                            <option value="{{ sandbox.source_batch_id }}">关联批次 #{{ sandbox.source_batch_id }}</option>
+                            {% endif %}
+                            {% for b in batches %}
+                            {% if not b.is_rolled_back %}
+                            <option value="{{ b.id }}">
+                                #{{ b.id }} - {{ b.batch_no }} ({{ b.batch_type }}, {{ b.created_at[:10] }})
+                            </option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">
+                            <input type="checkbox" name="force" value="1">
+                            强制应用，忽略冲突检测
+                        </label>
+                        <div class="form-text text-warning">
+                            <i class="bi bi-exclamation-triangle"></i> 勾选后将强制覆盖已有数据，可能导致数据不一致
+                        </div>
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-success btn-lg">
+                            <i class="bi bi-check-circle"></i> 确认应用
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-5">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-info-circle"></i> 操作说明
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning">
+                    <h6><i class="bi bi-exclamation-triangle"></i> 注意事项</h6>
+                    <ul class="small">
+                        <li>此操作将修改正式数据库中的数据</li>
+                        <li>系统会自动检测与现有数据的冲突</li>
+                        <li>检测到冲突时会阻止应用（除非勾选强制）</li>
+                        <li>应用后可以通过"回滚"功能恢复</li>
+                        <li>所有操作都会记录到审计日志</li>
+                    </ul>
+                </div>
+                <div class="alert alert-info">
+                    <h6><i class="bi bi-info-circle"></i> 冲突检测</h6>
+                    <p class="small mb-0">系统会检查目标字段是否已被其他人修改过。如果现有值与原值不同，则视为冲突。</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+""", trial=trial, sandbox=sandbox, batches=batches)
+
+
+@app.route('/promote/<trial_id>/apply', methods=['POST'])
+def promote_apply(trial_id):
+    """执行提升"""
+    try:
+        target_batch_id = request.form.get('target_batch_id')
+        force = request.form.get('force') == '1'
+
+        trial = sandbox_manager.get_trial(trial_id)
+        if not trial:
+            flash('试跑记录不存在', 'danger')
+            return redirect(url_for('sandboxes'))
+
+        promotion = sandbox_manager.promote_to_production(
+            sandbox_id_or_no=trial['sandbox_id'],
+            trial_id=int(trial_id),
+            target_batch_id=target_batch_id,
+            force=force,
+            operator='web'
+        )
+
+        flash(f'修正已成功应用！影响 {promotion["applied_rows"]} 行', 'success')
+        return redirect(url_for('promotion_detail', promotion_id=promotion['id']))
+
+    except Exception as e:
+        flash(f'应用失败: {str(e)}', 'danger')
+        return redirect(url_for('promote_confirm', trial_id=trial_id))
+
+
+@app.route('/promotions/<promotion_id>')
+def promotion_detail(promotion_id):
+    """提升记录详情"""
+    promotion = sandbox_manager.get_promotion(promotion_id)
+    if not promotion:
+        flash('提升记录不存在', 'danger')
+        return redirect(url_for('sandboxes'))
+
+    sandbox = sandbox_manager.get_sandbox(promotion['sandbox_id'])
+    trial = sandbox_manager.get_trial(promotion['trial_id'])
+
+    return render_page("""
+{% block title %}提升记录 #{{ promotion.id }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb mb-1">
+                <li class="breadcrumb-item"><a href="{{ url_for('sandboxes') }}">沙盒管理</a></li>
+                <li class="breadcrumb-item"><a href="{{ url_for('sandbox_detail', sandbox_id=sandbox.id) }}">{{ sandbox.name }}</a></li>
+                <li class="breadcrumb-item active" aria-current="page">提升记录 #{{ promotion.id }}</li>
+            </ol>
+        </nav>
+        <h2 class="mb-0"><i class="bi bi-rocket-takeoff"></i> 提升记录详情</h2>
+    </div>
+    <div>
+        <button class="btn btn-outline-secondary me-2" onclick="location.href='{{ url_for('sandbox_detail', sandbox_id=sandbox.id) }}'">
+            <i class="bi bi-arrow-left"></i> 返回沙盒
+        </button>
+        {% if not promotion.is_rolled_back %}
+        <button class="btn btn-danger" onclick="confirmRollback({{ promotion.id }})">
+            <i class="bi bi-arrow-counterclockwise"></i> 回滚
+        </button>
+        {% else %}
+        <span class="badge bg-danger">已回滚</span>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <strong>提升编号：</strong> {{ promotion.promotion_no }}<br>
+                <strong>状态：</strong>
+                {% if promotion.is_rolled_back %}
+                <span class="badge bg-danger">已回滚</span>
+                {% else %}
+                <span class="badge bg-success">已应用</span>
+                {% endif %}<br>
+                <strong>目标批次：</strong> #{{ promotion.target_batch_id }}<br>
+                <strong>应用行数：</strong> {{ promotion.applied_rows }}<br>
+                <strong>冲突数量：</strong> {{ promotion.conflict_count }}
+            </div>
+            <div class="col-md-6">
+                <strong>操作人：</strong> {{ promotion.applied_by }}<br>
+                <strong>应用时间：</strong> {{ promotion.applied_at[:19] if promotion.applied_at else '' }}<br>
+                {% if promotion.is_rolled_back %}
+                <strong>回滚人：</strong> {{ promotion.rolled_back_by }}<br>
+                <strong>回滚时间：</strong> {{ promotion.rolled_back_at[:19] if promotion.rolled_back_at else '' }}<br>
+                <strong>回滚原因：</strong> {{ promotion.rollback_note }}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if promotion.get('conflicts') %}
+<div class="card">
+    <div class="card-header">
+        <i class="bi bi-exclamation-triangle"></i> 冲突记录 ({{ promotion.conflicts|length }})
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>类型</th>
+                        <th>表</th>
+                        <th>字段</th>
+                        <th>现有值</th>
+                        <th>提议值</th>
+                        <th>解决状态</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for c in promotion.conflicts %}
+                    <tr>
+                        <td>{{ c.id }}</td>
+                        <td>{{ c.conflict_type }}</td>
+                        <td>{{ c.target_table }}</td>
+                        <td><code>{{ c.field_name }}</code></td>
+                        <td class="text-danger">{{ c.existing_value }}</td>
+                        <td class="text-success">{{ c.proposed_value }}</td>
+                        <td>
+                            {% set res_map = {'pending': ('待处理', 'bg-warning'), 'overwritten': ('已覆盖', 'bg-info'), 'rolled_back': ('已回滚', 'bg-danger')} %}
+                            {% set r = res_map.get(c.resolution, (c.resolution, 'bg-secondary')) %}
+                            <span class="badge {{ r[1] }}">{{ r[0] }}</span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>
+function confirmRollback(id) {
+    const reason = prompt('请输入回滚原因：');
+    if (reason && reason.trim()) {
+        if (confirm('确定要回滚此提升记录吗？数据将恢复到应用前的状态。')) {
+            location.href = "{{ url_for('rollback_promotion', promotion_id=0) }}".replace('/0', '/' + id) + '?reason=' + encodeURIComponent(reason);
+        }
+    }
+}
+</script>
+{% endblock %}
+""", promotion=promotion, sandbox=sandbox, trial=trial)
+
+
+@app.route('/promotions/<promotion_id>/rollback')
+def rollback_promotion(promotion_id):
+    """回滚提升记录"""
+    try:
+        reason = request.args.get('reason', '未填写原因')
+        promotion = sandbox_manager.rollback_promotion(
+            promotion_id=int(promotion_id),
+            reason=reason,
+            operator='web'
+        )
+        flash('回滚成功，数据已恢复', 'success')
+    except Exception as e:
+        flash(f'回滚失败: {str(e)}', 'danger')
+
+    return redirect(url_for('promotion_detail', promotion_id=promotion_id))
+
+
+@app.route('/sandboxes/<sandbox_id>/export')
+def sandbox_export(sandbox_id):
+    """导出沙盒包"""
+    try:
+        output_path = sandbox_manager.export_sandbox_package(sandbox_id)
+        return send_file(output_path, as_attachment=True, download_name=os.path.basename(output_path))
+    except Exception as e:
+        flash(f'导出失败: {str(e)}', 'danger')
+        return redirect(url_for('sandbox_detail', sandbox_id=sandbox_id))
+
+
+@app.route('/sandboxes/import-package', methods=['POST'])
+def sandbox_import_package():
+    """导入沙盒包"""
+    try:
+        if 'file' not in request.files:
+            flash('请选择文件', 'danger')
+            return redirect(url_for('sandboxes'))
+
+        file = request.files['file']
+        if file.filename == '':
+            flash('请选择文件', 'danger')
+            return redirect(url_for('sandboxes'))
+
+        if file:
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
+
+            rename = request.form.get('rename') or None
+
+            sandbox = sandbox_manager.import_sandbox_package(
+                file_path=filepath,
+                rename=rename,
+                operator='web'
+            )
+
+            os.remove(filepath)
+            flash(f'沙盒包导入成功，创建了沙盒 "{sandbox["name"]}"', 'success')
+            return redirect(url_for('sandbox_detail', sandbox_id=sandbox['id']))
+
+    except Exception as e:
+        flash(f'导入失败: {str(e)}', 'danger')
+
+    return redirect(url_for('sandboxes'))
+
+
+@app.route('/samples/<sample_id>/view')
+def view_sample(sample_id):
+    """查看样例数据"""
+    sample = sandbox_manager.get_sample(int(sample_id))
+    if not sample:
+        return '样例不存在', 404
+
+    data = sample.get('data', [])
+    return render_page("""
+{% block title %}{{ sample.sample_name }} - 样例数据{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-file-earmark-spreadsheet"></i> {{ sample.sample_name }}</h2>
+    <button class="btn btn-outline-secondary" onclick="window.close()">
+        <i class="bi bi-x-lg"></i> 关闭
+    </button>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        共 {{ data|length }} 行数据
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+            <table class="table table-sm table-hover mb-0">
+                <thead class="table-light sticky-top">
+                    <tr>
+                        <th>#</th>
+                        {% if data %}
+                        {% for key in data[0].keys() %}
+                        <th>{{ key }}</th>
+                        {% endfor %}
+                        {% endif %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in data %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        {% for key, value in row.items() %}
+                        <td>{{ value if value is not none else '' }}</td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+""", sample=sample, data=data)
+
+
+@app.route('/api/sandboxes')
+def api_sandboxes():
+    """API: 获取沙盒列表"""
+    sandboxes = sandbox_manager.list_sandboxes()
+    return jsonify({
+        'success': True,
+        'total': len(sandboxes),
+        'data': sandboxes
+    })
+
+
+@app.route('/api/sandboxes/<sandbox_id>')
+def api_sandbox_detail(sandbox_id):
+    """API: 获取沙盒详情"""
+    sandbox = sandbox_manager.get_sandbox(sandbox_id, include_details=True)
+    if not sandbox:
+        return jsonify({'success': False, 'message': '沙盒不存在'}), 404
+    return jsonify({
+        'success': True,
+        'data': sandbox
+    })
+
+
+@app.route('/api/sandboxes/<sandbox_id>/trials/<trial_id>')
+def api_trial_detail(sandbox_id, trial_id):
+    """API: 获取试跑详情"""
+    trial = sandbox_manager.get_trial(int(trial_id), include_results=True)
+    if not trial:
+        return jsonify({'success': False, 'message': '试跑记录不存在'}), 404
+    return jsonify({
+        'success': True,
+        'data': trial
+    })
+
+
+@app.route('/api/promotions/<promotion_id>')
+def api_promotion_detail(promotion_id):
+    """API: 获取提升详情"""
+    promotion = sandbox_manager.get_promotion(int(promotion_id))
+    if not promotion:
+        return jsonify({'success': False, 'message': '提升记录不存在'}), 404
+    return jsonify({
+        'success': True,
+        'data': promotion
     })
 
 

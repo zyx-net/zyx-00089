@@ -509,3 +509,366 @@ python main.py regression-test
 22. 阈值方案导出再导入
 23. 阈值方案导入冲突处理
 24. 阈值方案跨重启生效
+
+---
+
+## 🧪 v1.3.0 数据修正规则沙盒 ✅
+
+### 功能概述
+
+数据修正规则沙盒模块让值班员先在隔离空间里编写和试跑清洗规则，再决定是否应用到正式分析结果。所有规则、试跑结果和操作日志都落到 SQLite，重启后还能继续查看和回滚；同一数据集被多人或多次应用时会检测冲突，不会静默覆盖。
+
+### 核心特性
+
+#### 1. 隔离沙盒环境 ✅
+- **沙盒管理**: 创建、编辑、删除沙盒，每个沙盒独立存储样例、规则和试跑记录
+- **状态流转**: 草稿 → 测试中 → 已审批 → 已应用 → 已归档/已回滚
+- **数据模型**: [Sandbox](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/models.py#L88-L114)
+
+#### 2. 样例数据导入 ✅
+- **格式支持**: CSV 和 JSON 两种格式
+- **数据类型**: 地块台账、水表读数、灌溉计划、天气补录
+- **导入命令**: `sandbox import-sample`
+- **数据模型**: [SandboxSample](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/models.py#L117-L132)
+
+#### 3. 四种规则类型 ✅
+
+| 规则类型 | 说明 | 适用场景 |
+|---------|------|---------|
+| **字段映射** | 将源字段值复制到目标字段 | 字段重命名、数据对齐 |
+| **缺失值填补** | 目标字段为空时使用填补值 | 补全缺失的操作员、日期等 |
+| **异常值改写** | 满足条件时替换目标字段值 | 修正异常读数、错误编码 |
+| **自定义规则** | 执行条件和替换的Python表达式 | 复杂业务逻辑处理 |
+
+- **数据模型**: [SandboxRule](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/models.py#L135-L162)
+
+#### 4. 试跑与差异预览 ✅
+- **规则引擎**: 按优先级顺序执行所有激活规则
+- **差异计算**: 精确记录每行、每字段的变更前后值
+- **影响统计**: 总行数、影响行数、未变化行数、错误计数
+- **按类型统计**: 修改、新增、删除、错误分类统计
+- **数据模型**: 
+  - [SandboxTrial](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/models.py#L165-L185)
+  - [SandboxTrialResult](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/models.py#L188-L210)
+
+#### 5. 提升为正式修正 ✅
+- **冲突检测**: 应用前自动检测与现有数据的冲突
+  - 检查目标字段是否已被其他人修改
+  - 检测同一批次是否已被多次应用
+  - 阻止静默覆盖，提供 `--force` 强制选项
+- **应用确认**: 展示影响摘要、冲突详情，需人工确认
+- **数据模型**:
+  - [SandboxPromotion](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/models.py#L213-L244)
+  - [SandboxConflict](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/models.py#L247-L269)
+
+#### 6. 回滚机制 ✅
+- **一键回滚**: 将数据恢复到应用前的状态
+- **回滚日志**: 记录回滚原因、操作人、时间
+- **状态追踪**: 沙盒状态更新为"已回滚"
+- **冲突标记**: 相关冲突记录标记为"已回滚"
+
+#### 7. 导入导出沙盒包 ✅
+- **导出格式**: ZIP 压缩包，包含：
+  - `metadata.json` - 元数据（版本、导出时间、统计信息）
+  - `sandbox.json` - 沙盒基本信息
+  - `rules.json` - 所有规则配置
+  - `samples.json` - 样例数据
+  - `trials.json` - 试跑记录
+  - `promotions.json` - 提升记录
+  - `logs.json` - 操作日志
+  - `report.md` - 规则报告（含规则摘要、差异统计、操作者记录）
+- **导入复现**: 一键导入沙盒包，完整复现所有内容
+- **重命名支持**: 导入时可重命名，避免名称冲突
+
+#### 8. 操作日志与审计 ✅
+- **日志记录**: 所有操作都记录到 `sandbox_logs` 表
+- **操作类型**: 创建、更新、删除、导入样例、添加规则、更新规则、删除规则、执行试跑、提升、回滚、导入包、导出包
+- **多用户追踪**: 完整记录每个操作的操作人
+- **数据模型**: [SandboxLog](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/models.py#L272-L289)
+
+#### 9. 持久化保证 ✅
+- 所有数据存储在 SQLite 数据库
+- 重启数据库连接后数据完整保留
+- 沙盒、规则、样例、试跑、提升、日志全部持久化
+
+### CLI 命令清单
+
+```bash
+# 🧪 沙盒管理
+python main.py sandbox list                                    # 列出所有沙盒
+python main.py sandbox list --status draft                     # 按状态过滤
+python main.py sandbox create --name "6月数据修正" --description "修正水表读数异常"  # 创建沙盒
+python main.py sandbox show 1                                   # 查看沙盒详情
+python main.py sandbox delete 1                                 # 删除沙盒
+
+# 📥 样例数据导入
+python main.py sandbox import-sample 1 data/meter_sample.csv meter  # 导入CSV样例
+python main.py sandbox import-sample 1 data/meter_sample.json meter # 导入JSON样例
+python main.py sandbox samples 1                                # 列出样例数据
+
+# 📝 规则管理
+python main.py sandbox add-rule 1 missing_fill "填补操作员" \
+    --target-field operator --fill-value "未知操作员" --priority 1   # 添加缺失值填补规则
+python main.py sandbox add-rule 1 outlier_replace "修正异常读数" \
+    --target-field reading_value --condition "value > 9000" --replacement "0" --priority 2  # 添加异常值改写规则
+python main.py sandbox add-rule 1 field_mapping "字段映射" \
+    --source-field old_field --target-field new_field --priority 0  # 添加字段映射规则
+python main.py sandbox add-rule 1 custom "自定义规则" \
+    --target-field total_flow --condition "row['reading_value'] > 100" \
+    --replacement "row['total_flow'] = row['reading_value'] * 0.5" --priority 3  # 添加自定义规则
+python main.py sandbox rules 1                                  # 列出规则
+python main.py sandbox update-rule 1 --name "新名称" --fill-value "新值"  # 更新规则
+python main.py sandbox delete-rule 1                            # 删除规则
+
+# 🚀 试跑与提升
+python main.py sandbox run-trial 1                              # 执行试跑
+python main.py sandbox trials 1                                 # 列出试跑记录
+python main.py sandbox trial-results 1                          # 查看试跑差异详情
+python main.py sandbox promote 1 --trial 1 --target-batch 1     # 提升为正式修正
+python main.py sandbox promote 1 --trial 1 --target-batch 1 --force  # 强制应用（忽略冲突）
+python main.py sandbox promotions                               # 列出所有提升记录
+python main.py sandbox rollback-promotion 1 --reason "数据错误" # 回滚提升
+
+# 📦 导入导出
+python main.py sandbox export 1                                 # 导出沙盒包
+python main.py sandbox export 1 --output outputs/my_sandbox.zip  # 指定输出路径
+python main.py sandbox import outputs/my_sandbox.zip             # 导入沙盒包
+python main.py sandbox import outputs/my_sandbox.zip --rename "副本"  # 导入并重命名
+
+# 📜 操作日志
+python main.py sandbox logs                                     # 查看所有操作日志
+python main.py sandbox logs --sandbox-id 1                      # 查看指定沙盒的日志
+python main.py sandbox logs --operation promote                 # 按操作类型过滤
+
+# 🧪 测试
+python main.py test-sandbox                                     # 运行沙盒模块完整测试
+```
+
+### Web 功能页面
+
+1. **沙盒列表页** (`/sandboxes`)
+   - 沙盒概览表格（状态、名称、样例数、规则数、试跑次数）
+   - 新建沙盒、导入沙盒包按钮
+   - 查看、导出、删除操作
+
+2. **沙盒详情页** (`/sandboxes/<id>`)
+   - 统计卡片（样例数、规则数、试跑次数、日志数）
+   - 三个标签页：样例数据、修正规则、试跑记录
+   - 导入样例、添加规则、执行试跑快捷操作
+
+3. **试跑结果页** (`/trials/<id>`)
+   - 统计摘要（总行数、影响行数、未变化、错误）
+   - 变更类型统计图表
+   - 详细差异列表（旧值/新值对比）
+   - 提升为正式修正入口
+
+4. **提升确认页** (`/promote/<trial_id>/confirm`)
+   - 影响摘要展示
+   - 目标批次选择
+   - 强制应用选项
+   - 操作说明和注意事项
+
+5. **提升记录详情页** (`/promotions/<id>`)
+   - 应用结果详情
+   - 冲突记录列表
+   - 回滚操作按钮
+
+6. **RESTful API**
+   - `GET /api/sandboxes` - 获取沙盒列表
+   - `GET /api/sandboxes/<id>` - 获取沙盒详情
+   - `GET /api/sandboxes/<sid>/trials/<tid>` - 获取试跑详情
+   - `GET /api/promotions/<id>` - 获取提升详情
+
+### 验收命令
+
+```bash
+# ========== 🧪 验收测试1：运行完整测试套件 ==========
+python main.py test-sandbox
+# 预期：所有测试通过，包含40+测试用例，覆盖所有功能
+
+# ========== 🧪 验收测试2：完整沙盒工作流 ==========
+
+# 1. 初始化数据库和样例数据
+python main.py init
+python main.py import-all
+
+# 2. 创建沙盒
+python main.py sandbox create --name "6月水表修正" --description "修正6月水表读数中的异常值" --by "值班员小李"
+# 预期：沙盒创建成功，状态为草稿
+
+# 3. 查看沙盒列表
+python main.py sandbox list
+# 预期：显示刚创建的沙盒，状态为草稿
+
+# 4. 创建测试样例CSV
+cat > outputs/test_meter.csv << 'EOF'
+parcel_id,meter_id,read_date,reading_value,total_flow,operator
+P001,M001,2026-06-01,100,50,张三
+P002,M002,2026-06-01,200,,李四
+P003,M003,2026-06-01,9999,150,
+P004,M004,2026-06-01,300,200,王五
+P005,M005,2026-06-01,,180,赵六
+EOF
+
+# 5. 导入样例数据
+python main.py sandbox import-sample 1 outputs/test_meter.csv meter --sample-name "6月测试样例" --by "值班员小李"
+# 预期：导入成功，5行数据
+
+# 6. 添加缺失值填补规则
+python main.py sandbox add-rule 1 missing_fill "填补缺失操作员" \
+    --target-field operator --fill-value "临时操作员" --priority 1 --by "值班员小李"
+# 预期：规则添加成功
+
+# 7. 添加异常值改写规则
+python main.py sandbox add-rule 1 outlier_replace "修正超大读数" \
+    --target-field reading_value --condition "value > 9000" --replacement "300" --priority 2 --by "值班员小李"
+# 预期：规则添加成功
+
+# 8. 添加缺失值填补规则（读数）
+python main.py sandbox add-rule 1 missing_fill "填补缺失读数" \
+    --target-field reading_value --fill-value "0" --priority 3 --by "值班员小李"
+# 预期：规则添加成功
+
+# 9. 查看规则列表
+python main.py sandbox rules 1
+# 预期：显示3条激活规则
+
+# 10. 执行试跑
+python main.py sandbox run-trial 1 --by "值班员小李"
+# 预期：试跑完成，显示影响行数（应该>=3行）
+
+# 11. 查看试跑记录
+python main.py sandbox trials 1
+# 预期：显示1条试跑记录，状态为已完成
+
+# 12. 查看试跑差异详情
+python main.py sandbox trial-results 1
+# 预期：显示详细差异列表，包含旧值/新值对比
+
+# 13. 导出沙盒包
+python main.py sandbox export 1 --output outputs/sandbox_backup.zip
+# 预期：导出成功，生成ZIP文件
+
+# 14. 查看操作日志
+python main.py sandbox logs --sandbox-id 1
+# 预期：显示所有操作历史（创建、导入样例、添加规则、执行试跑、导出）
+
+# 15. 提升为正式修正（会检测冲突）
+python main.py sandbox promote 1 --trial 1 --target-batch 1 --by "值班主管"
+# 预期：可能检测到冲突，提示使用--force
+
+# 16. 强制提升（如果有冲突）
+python main.py sandbox promote 1 --trial 1 --target-batch 1 --force --by "值班主管"
+# 预期：修正应用成功
+
+# 17. 查看提升记录
+python main.py sandbox promotions
+# 预期：显示1条提升记录
+
+# 18. 回滚提升
+python main.py sandbox rollback-promotion 1 --reason "测试回滚功能" --by "值班主管"
+# 预期：回滚成功，数据恢复
+
+# 19. 验证回滚后数据
+python main.py sandbox promotions
+# 预期：提升记录显示为已回滚
+
+# 20. 导入沙盒包（复现）
+python main.py sandbox import outputs/sandbox_backup.zip --rename "6月水表修正-副本" --by "系统管理员"
+# 预期：导入成功，创建新的沙盒副本
+
+# 21. 验证导入的沙盒
+python main.py sandbox list
+# 预期：显示两个沙盒
+
+# 22. 验证重启持久化（模拟重启）
+python main.py sandbox show 1
+# 预期：沙盒信息完整，样例、规则、试跑记录都在
+
+# ========== 🧪 验收测试3：Web端验证 ==========
+
+# 启动Web服务
+python main.py web
+# 预期：服务启动在 http://localhost:5000
+
+# 浏览器访问验证：
+# 1. http://localhost:5000/sandboxes - 沙盒列表页
+# 2. http://localhost:5000/sandboxes/1 - 沙盒详情页
+# 3. http://localhost:5000/trials/1 - 试跑结果页
+# 4. http://localhost:5000/promotions/1 - 提升记录详情页
+# 5. http://localhost:5000/api/sandboxes - API返回JSON
+
+# ========== 🧪 验收测试4：冲突检测验证 ==========
+
+# 1. 创建新沙盒
+python main.py sandbox create --name "冲突测试" --by "测试员A"
+
+# 2. 导入样例
+python main.py sandbox import-sample 3 outputs/test_meter.csv meter --by "测试员A"
+
+# 3. 添加规则
+python main.py sandbox add-rule 3 missing_fill "填补操作员" --target-field operator --fill-value "测试员A修改" --by "测试员A"
+
+# 4. 执行试跑
+python main.py sandbox run-trial 3 --by "测试员A"
+
+# 5. 先修改数据库中的数据（模拟其他人已修改）
+python -c "
+from irrigation_analysis.database import get_db
+from irrigation_analysis.models import MeterReading
+with get_db() as db:
+    r = db.query(MeterReading).filter(MeterReading.parcel_id=='P001', MeterReading.batch_id==1).first()
+    if r:
+        r.operator = '已被其他人修改'
+        print(f'已修改P001的operator为: {r.operator}')
+"
+
+# 6. 尝试提升（应该检测到冲突）
+python main.py sandbox promote 3 --trial 3 --target-batch 1 --by "测试员A"
+# 预期：检测到冲突，阻止应用
+
+# 7. 强制提升
+python main.py sandbox promote 3 --trial 3 --target-batch 1 --force --by "测试员A"
+# 预期：强制应用成功，记录冲突
+
+# ========== 🧪 验收测试5：权限与日志验证 ==========
+
+# 查看所有操作日志（审计用）
+python main.py sandbox logs
+# 预期：显示所有操作记录，包含操作人、时间、详情
+
+# 按操作类型过滤
+python main.py sandbox logs --operation promote
+# 预期：只显示提升操作
+
+# 按沙盒过滤
+python main.py sandbox logs --sandbox-id 1
+# 预期：只显示指定沙盒的操作
+```
+
+### 测试覆盖范围
+
+运行 `python main.py test-sandbox` 执行完整测试，包含 10 大类测试：
+
+1. ✅ **沙盒CRUD操作** - 创建、查询、更新、删除
+2. ✅ **样例数据导入** - CSV和JSON格式导入
+3. ✅ **规则管理** - 添加、查询、更新、删除四种规则类型
+4. ✅ **试跑执行** - 规则引擎执行、差异计算、影响统计
+5. ✅ **跨重启持久化** - 模拟数据库重启，验证所有数据保留
+6. ✅ **冲突检测** - 检测数据冲突、阻止静默覆盖、强制应用
+7. ✅ **回滚机制** - 数据恢复、状态更新、日志记录
+8. ✅ **导入导出沙盒包** - 包结构验证、报告生成、复现导入
+9. ✅ **操作日志与权限追踪** - 多用户操作记录、审计追踪
+10. ✅ **完整提升流程** - 从创建到应用到回滚的完整链路
+
+### 核心实现文件
+
+| 文件 | 说明 |
+|------|------|
+| [models.py](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/models.py) | 8张数据库表模型 |
+| [sandbox_manager.py](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/sandbox_manager.py) | 核心业务逻辑（2500+行） |
+| [cli.py](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/cli.py) | 18个CLI命令 |
+| [web.py](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/web.py) | Web页面和RESTful API |
+| [test_sandbox.py](file:///d:/workSpace/AI__SPACE/zyx-00089/irrigation_analysis/test_sandbox.py) | 完整测试套件 |
+
+---
