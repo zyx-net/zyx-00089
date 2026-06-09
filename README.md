@@ -48,10 +48,10 @@ python main.py --help
 # 生成样例数据
 python main.py sample
 
-# 一键导入所有样例数据并检测异常
+# 一键导入所有样例数据（导入后需执行 detect 检测异常）
 python main.py import-all
 
-# 执行异常检测
+# 执行异常检测（导入样例数据后必须执行）
 python main.py detect
 
 # 查看异常列表

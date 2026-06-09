@@ -45,6 +45,8 @@ class RegressionTest:
             self._test_7_csv_report()
             self._test_8_html_content_readable()
             self._test_9_html_tags_integrity()
+            self._test_10_full_pipeline_import_detect_anomalies()
+            self._test_11_import_all_behavior()
 
         except Exception as e:
             self._add_result('测试执行异常', False, str(e))
@@ -486,6 +488,115 @@ class RegressionTest:
 
         except Exception as e:
             self._add_result('HTML标签完整性', False, str(e))
+
+    def _test_10_full_pipeline_import_detect_anomalies(self):
+        """测试10: 完整链路 - 导入→检测→异常列表，验证None格式化不崩溃"""
+        print('\n📋 测试10: 完整链路 - 导入→检测→异常列表')
+
+        try:
+            self._cleanup()
+
+            code, stdout, stderr = self._run_command(['init'])
+            if code != 0:
+                self._add_result('完整链路-初始化', False, f'init失败: {stderr[:200]}')
+                return
+            self._add_result('完整链路-初始化', True)
+
+            code, stdout, stderr = self._run_command(['import-all'])
+            if code != 0:
+                self._add_result('完整链路-导入样例', False, f'import-all失败: {stderr[:200]}')
+                return
+
+            if '正在执行异常检测' in stdout:
+                self._add_result('完整链路-导入样例', False, 'import-all 不应该自动执行检测')
+                return
+            self._add_result('完整链路-导入样例', True, 'import-all 仅导入数据，不自动检测')
+
+            code, stdout, stderr = self._run_command(['detect'])
+            if code != 0:
+                self._add_result('完整链路-异常检测', False, f'detect失败: {stderr[:200]}')
+                return
+
+            if 'UnicodeEncodeError' in stdout or 'NoneType' in stderr:
+                self._add_result('完整链路-异常检测', False, 'detect输出中出现编码或None格式化错误')
+                return
+
+            if '检测完成' not in stdout or '新发现' not in stdout:
+                self._add_result('完整链路-异常检测', False, 'detect输出中缺少完成信息')
+                return
+            self._add_result('完整链路-异常检测', True, '异常检测完成，无格式化错误')
+
+            code, stdout, stderr = self._run_command(['anomalies'])
+            if code != 0:
+                self._add_result('完整链路-异常列表', False, f'anomalies失败: {stderr[:200]}')
+                return
+
+            if 'NoneType' in stderr or 'unsupported format' in stderr:
+                self._add_result('完整链路-异常列表', False, 'anomalies出现None格式化崩溃')
+                return
+
+            if '缺少地块编号' not in stdout:
+                self._add_result('完整链路-异常列表', False, '异常列表中缺少"缺少地块编号"记录')
+                return
+
+            if '日期格式错误' not in stdout:
+                self._add_result('完整链路-异常列表', False, '异常列表中缺少"日期格式错误"记录')
+                return
+
+            anomaly_lines = []
+            in_table = False
+            for l in stdout.split('\n'):
+                stripped = l.strip()
+                if 'ID 类型' in l and '严重程度' in l:
+                    in_table = True
+                    continue
+                if in_table and stripped.startswith('---'):
+                    continue
+                if in_table and stripped:
+                    parts = stripped.split()
+                    if len(parts) >= 4 and parts[0].isdigit():
+                        anomaly_lines.append(l)
+
+            if len(anomaly_lines) < 10:
+                self._add_result('完整链路-异常列表', False, f'异常列表不完整，仅显示{len(anomaly_lines)}条')
+                return
+
+            self._add_result('完整链路-异常列表', True, f'完整显示{len(anomaly_lines)}条异常，无崩溃')
+
+        except Exception as e:
+            self._add_result('完整链路-异常列表', False, str(e))
+
+    def _test_11_import_all_behavior(self):
+        """测试11: 核对import-all行为与README说明一致性"""
+        print('\n📋 测试11: import-all行为与README说明一致性')
+
+        try:
+            self._cleanup()
+
+            self._run_command(['init'])
+
+            code, stdout, stderr = self._run_command(['import-all'])
+
+            if code != 0:
+                self._add_result('import-all行为核对', False, f'import-all失败: {stderr[:200]}')
+                return
+
+            if '正在执行异常检测' in stdout:
+                self._add_result('import-all行为核对', False, 'import-all 不应该执行异常检测')
+                return
+
+            if '检测完成' in stdout:
+                self._add_result('import-all行为核对', False, 'import-all 不应该显示检测完成')
+                return
+
+            if '所有样例数据导入完成' not in stdout:
+                self._add_result('import-all行为核对', False, 'import-all 应该显示导入完成')
+                return
+
+            self._add_result('import-all行为核对', True, 'import-all仅导入数据，与README说明一致')
+
+        except Exception as e:
+            self._add_result('import-all行为核对', False, str(e))
 
     def _print_summary(self):
         """打印测试摘要"""

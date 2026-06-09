@@ -212,10 +212,13 @@ def detect_anomalies(batch_id, parcel_id):
         if anomalies:
             click.echo('\n异常列表:')
             for a in anomalies:
+                anomaly_id = a.get('id', '?')
+                anomaly_code = a.get('anomaly_code') or 'UNKNOWN'
+                description = a.get('description') or '无描述'
                 severity_color = {'high': 'red', 'medium': 'yellow', 'low': 'green'}
                 color = severity_color.get(a.get('severity', 'medium'))
                 click.secho(
-                    f'  #{a.get("id", "?"):>3} [{a["anomaly_code"]}] {a["description"][:60]}...',
+                    f'  #{anomaly_id:>3} [{anomaly_code}] {description[:60]}...',
                     fg=color
                 )
         else:
@@ -282,13 +285,20 @@ def list_anomalies(batch_id, type, reviewed, parcel_id, limit):
         click.echo('-' * 100)
 
         for a in anomalies:
+            parcel_id = a.get('parcel_id') or '-'
+            anomaly_type = a.get('anomaly_type') or '未知异常'
+            severity = a.get('severity') or 'medium'
+            rule_version = a.get('rule_version') or '-'
+            description = a.get('description') or '无描述'
+            desc = description[:50] + '...' if len(description) > 50 else description
+
             severity_color = {'high': 'red', 'medium': 'yellow', 'low': 'green'}
-            color = severity_color.get(a['severity'], 'yellow')
+            color = severity_color.get(severity, 'yellow')
             if a['is_reviewed']:
                 if a['is_false_positive']:
                     status = '误报'
                     status_color = 'yellow'
-                elif a['review_result'] == 'valid':
+                elif a.get('review_result') == 'valid':
                     status = '有效'
                     status_color = 'green'
                 else:
@@ -298,13 +308,12 @@ def list_anomalies(batch_id, type, reviewed, parcel_id, limit):
                 status = '待复核'
                 status_color = 'white'
 
-            desc = a['description'][:50] + '...' if len(a['description']) > 50 else a['description']
             click.echo(f'{a["id"]:>4} ', nl=False)
-            click.secho(f'{a["anomaly_type"]:<20} ', fg=color, nl=False)
-            click.echo(f'{a.get("parcel_id", "-"):<10} ', nl=False)
-            click.secho(f'{a["severity"]:<8} ', fg=color, nl=False)
+            click.secho(f'{anomaly_type:<20} ', fg=color, nl=False)
+            click.echo(f'{parcel_id:<10} ', nl=False)
+            click.secho(f'{severity:<8} ', fg=color, nl=False)
             click.secho(f'{status:<10} ', fg=status_color, nl=False)
-            click.echo(f'{a["rule_version"]:<10} ', nl=False)
+            click.echo(f'{rule_version:<10} ', nl=False)
             click.echo(desc)
 
     except Exception as e:
