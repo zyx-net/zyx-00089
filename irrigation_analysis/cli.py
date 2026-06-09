@@ -296,7 +296,7 @@ def list_anomalies(batch_id, type, reviewed, parcel_id, limit):
 
         click.echo(f'🔍 异常列表 (共 {len(anomalies)} 条异常):')
         click.echo('-' * 120)
-        click.echo(f'{"ID":>4} {"类型":<18} {"地块":<10} {"严重":<6} {"状态":<8} {"规则":<8} {"方案":<15} {"描述"}')
+        click.echo(f'{"ID":>4} {"类型":<18} {"地块":<10} {"严重程度":<8} {"状态":<8} {"规则":<8} {"方案":<15} {"描述"}')
         click.echo('-' * 120)
 
         for a in anomalies:

@@ -495,8 +495,8 @@ class RegressionTest:
             self._add_result('HTML标签完整性', False, str(e))
 
     def _test_10_full_pipeline_import_detect_anomalies(self):
-        """测试10: 完整链路 - 导入→检测→异常列表，验证None格式化不崩溃"""
-        print('\n📋 测试10: 完整链路 - 导入→检测→异常列表')
+        """测试10: 完整链路 - 导入→检测→异常列表→阈值方案切换→失败输入验证"""
+        print('\n📋 测试10: 完整链路 - 导入→检测→异常列表→阈值方案')
 
         try:
             self._cleanup()
@@ -548,11 +548,19 @@ class RegressionTest:
                 self._add_result('完整链路-异常列表', False, '异常列表中缺少"日期格式错误"记录')
                 return
 
+            if '方案' not in stdout:
+                self._add_result('完整链路-异常列表', False, '异常列表中缺少"方案"列')
+                return
+
+            if 'default' not in stdout:
+                self._add_result('完整链路-异常列表', False, '异常列表中未显示默认方案"default"')
+                return
+
             anomaly_lines = []
             in_table = False
             for l in stdout.split('\n'):
                 stripped = l.strip()
-                if 'ID 类型' in l and '严重程度' in l:
+                if 'ID 类型' in l and '严重程度' in l and '方案' in l:
                     in_table = True
                     continue
                 if in_table and stripped.startswith('---'):
@@ -563,10 +571,110 @@ class RegressionTest:
                         anomaly_lines.append(l)
 
             if len(anomaly_lines) < 10:
-                self._add_result('完整链路-异常列表', False, f'异常列表不完整，仅显示{len(anomaly_lines)}条')
+                self._add_result('完整链路-异常列表', False,
+                               f'异常列表不完整，仅显示{len(anomaly_lines)}条。stdout={stdout[:500]}')
+                return
+            self._add_result('完整链路-异常列表', True,
+                           f'完整显示{len(anomaly_lines)}条异常，含阈值方案列，无崩溃')
+
+            code, stdout, stderr = self._run_command(['summary'])
+            if code != 0:
+                self._add_result('完整链路-汇总统计', False, f'summary失败: {stderr[:200]}')
                 return
 
-            self._add_result('完整链路-异常列表', True, f'完整显示{len(anomaly_lines)}条异常，无崩溃')
+            if '当前阈值方案' not in stdout:
+                self._add_result('完整链路-汇总统计', False, '汇总中缺少"当前阈值方案"信息')
+                return
+
+            if 'default' not in stdout:
+                self._add_result('完整链路-汇总统计', False, '汇总中未显示当前方案为"default"')
+                return
+
+            if '按阈值方案统计' not in stdout:
+                self._add_result('完整链路-汇总统计', False, '汇总中缺少"按阈值方案统计"')
+                return
+            self._add_result('完整链路-汇总统计', True, '汇总显示阈值方案信息')
+
+            import time
+            scheme_name = f'严格方案_{int(time.time())}'
+
+            code, stdout, stderr = self._run_command([
+                'threshold', 'create',
+                '--name', scheme_name,
+                '--meter-backward', '0.001',
+                '--over-plan-ratio', '1.01',
+                '--missing-reading-days', '0.1',
+                '--by', '回归测试'
+            ])
+            if code != 0:
+                self._add_result('完整链路-创建方案', False,
+                               f'创建方案失败: {stderr[:200]}')
+                return
+            self._add_result('完整链路-创建方案', True, f'创建方案"{scheme_name}"成功')
+
+            code, stdout, stderr = self._run_command(['threshold', 'enable', scheme_name])
+            if code != 0:
+                self._add_result('完整链路-启用方案', False,
+                               f'启用方案失败: {stderr[:200]}')
+                return
+
+            if '方案已启用' not in stdout:
+                self._add_result('完整链路-启用方案', False,
+                               f'启用输出不正确: {stdout[:200]}')
+                return
+            self._add_result('完整链路-启用方案', True, f'启用方案"{scheme_name}"成功')
+
+            code, stdout, stderr = self._run_command(['summary'])
+            if code != 0:
+                self._add_result('完整链路-方案生效验证', False, f'summary失败: {stderr[:200]}')
+                return
+
+            if scheme_name not in stdout:
+                self._add_result('完整链路-方案生效验证', False,
+                               f'汇总中未显示新方案"{scheme_name}"')
+                return
+            self._add_result('完整链路-方案生效验证', True,
+                           f'方案"{scheme_name}"已生效，汇总显示正确')
+
+            import json
+            bad_scheme_path = self.output_dir / 'bad_scheme.json'
+            bad_scheme_path.write_text(json.dumps({
+                'scheme': {
+                    'name': '非法方案',
+                    'meter_backward_tolerance': '不是数字',
+                    'over_plan_ratio': -1,
+                    'missing_reading_days': 2.0
+                }
+            }, ensure_ascii=False), encoding='utf-8')
+
+            code, stdout, stderr = self._run_command([
+                'threshold', 'import', str(bad_scheme_path)
+            ])
+
+            if code == 0:
+                self._add_result('完整链路-失败输入不污染', False,
+                               '非法数值方案导入应该失败但成功了')
+                bad_scheme_path.unlink()
+                return
+
+            code, stdout, stderr = self._run_command(['threshold', 'list'])
+            if scheme_name not in stdout:
+                self._add_result('完整链路-失败输入不污染', False,
+                               f'失败输入污染了当前方案，"{scheme_name}"不再是启用方案')
+                bad_scheme_path.unlink()
+                return
+
+            if '非法方案' in stdout:
+                self._add_result('完整链路-失败输入不污染', False,
+                               '失败输入污染了数据库，出现了"非法方案"')
+                bad_scheme_path.unlink()
+                return
+
+            bad_scheme_path.unlink()
+            self._add_result('完整链路-失败输入不污染', True,
+                           '非法数值导入失败，当前方案未受污染')
+
+            self._test10_active_scheme = scheme_name
 
         except Exception as e:
             self._add_result('完整链路-异常列表', False, str(e))
@@ -881,56 +989,41 @@ class RegressionTest:
                            f'启用方案失败. stdout={stdout}, stderr={stderr}')
             return
 
-        import subprocess
-        verify_script = self.project_dir / 'verify_persistence.py'
-        verify_script.write_text(f"""
-import sys
-sys.path.insert(0, '.')
-from irrigation_analysis.threshold_manager import get_threshold_manager
+        code, stdout, stderr = self._run_command([
+            'threshold', 'show', scheme_name
+        ])
 
-manager = get_threshold_manager()
-active = manager.get_active_scheme()
+        if code != 0:
+            self._add_result('阈值方案跨重启生效', False,
+                           f'查询方案详情失败: {stderr[:200]}')
+            return
 
-if active['name'] != '{scheme_name}':
-    print(f'FAIL: 期望方案是{scheme_name}，实际是 {{active["name"]}}')
-    sys.exit(1)
-if active['over_plan_ratio'] != 1.8:
-    print(f'FAIL: 期望超计划比例是1.8，实际是 {{active["over_plan_ratio"]}}')
-    sys.exit(1)
-if active['meter_backward_tolerance'] != 0.03:
-    print(f'FAIL: 期望容差是0.03，实际是 {{active["meter_backward_tolerance"]}}')
-    sys.exit(1)
-if active['missing_reading_days'] != 2.0:
-    print(f'FAIL: 期望漏读天数是2.0，实际是 {{active["missing_reading_days"]}}')
-    sys.exit(1)
+        if scheme_name not in stdout:
+            self._add_result('阈值方案跨重启生效', False,
+                           f'方案详情中未找到方案名: {stdout[:200]}')
+            return
 
-print('PASS: 跨重启生效验证通过')
-""", encoding='utf-8')
+        if '0.03' not in stdout or '1.8' not in stdout or '2.0' not in stdout:
+            self._add_result('阈值方案跨重启生效', False,
+                           f'方案阈值不正确: {stdout[:300]}')
+            return
 
-        try:
-            result = subprocess.run(
-                [sys.executable, str(verify_script)],
-                cwd=str(self.project_dir),
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                timeout=60
-            )
+        code, stdout, stderr = self._run_command(['threshold', 'list'])
+        if code != 0:
+            self._add_result('阈值方案跨重启生效', False,
+                           f'列表查询失败: {stderr[:200]}')
+            return
 
-            if result.returncode != 0:
-                self._add_result('阈值方案跨重启生效', False,
-                               f'跨进程验证失败: {result.stdout} {result.stderr}')
-                return
+        active_marker = False
+        for line in stdout.split('\n'):
+            if scheme_name in line and '✓ 启用' in line:
+                active_marker = True
+                break
 
-            if 'PASS' not in result.stdout:
-                self._add_result('阈值方案跨重启生效', False,
-                               f'验证输出不正确: {result.stdout}')
-                return
-        finally:
-            try:
-                verify_script.unlink()
-            except:
-                pass
+        if not active_marker:
+            self._add_result('阈值方案跨重启生效', False,
+                           f'方案未显示为启用状态: {stdout[:300]}')
+            return
 
         code, stdout, stderr = self._run_command(['threshold', 'logs', '--limit', '10'])
         if code != 0:

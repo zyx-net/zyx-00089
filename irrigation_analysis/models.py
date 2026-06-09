@@ -220,7 +220,7 @@ class ThresholdScheme(Base):
     description = Column(String(500))
     meter_backward_tolerance = Column(Float, nullable=False, default=0.01)
     over_plan_ratio = Column(Float, nullable=False, default=1.2)
-    missing_reading_days = Column(Float, nullable=False, default=1.0)
+    missing_reading_days = Column(Float, nullable=False, default=25.0 / 24.0)
     is_active = Column(Boolean, default=False, index=True)
     created_by = Column(String(50), default='system')
     created_at = Column(DateTime, default=datetime.now)
