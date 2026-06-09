@@ -3,6 +3,8 @@
 命令行接口
 """
 import sys
+import io
+import os
 import json
 from datetime import datetime
 from typing import Optional
@@ -15,6 +17,39 @@ from .batch_manager import batch_manager, review_manager, rollback_manager
 from .reports import report_generator
 from .sample_data import sample_data_generator
 from .config import EXCEPTION_TYPES
+
+
+def _fix_console_encoding() -> None:
+    """修复Windows控制台编码问题，避免GBK环境下UnicodeEncodeError"""
+    if sys.platform != 'win32':
+        return
+
+    try:
+        def _safe_write(stream, text):
+            if isinstance(text, bytes):
+                text = text.decode('utf-8', errors='replace')
+            try:
+                stream.buffer.write(text.encode('utf-8'))
+                stream.flush()
+            except Exception:
+                try:
+                    stream.buffer.write(text.encode(sys.stdout.encoding or 'gbk', errors='replace'))
+                    stream.flush()
+                except Exception:
+                    pass
+
+        if sys.stdout and sys.stdout.encoding and sys.stdout.encoding.lower() in ('cp936', 'gbk', 'gb2312'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if sys.stderr and sys.stderr.encoding and sys.stderr.encoding.lower() in ('cp936', 'gbk', 'gb2312'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+        os.environ.setdefault('PYTHONIOENCODING', 'utf-8:replace')
+
+    except Exception:
+        pass
+
+
+_fix_console_encoding()
 
 
 class CliErrorHandler:
@@ -482,6 +517,16 @@ def acceptance_test():
     try:
         from .acceptance_test import run_acceptance_test
         run_acceptance_test()
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@cli.command('regression-test', help='运行回归测试')
+def regression_test():
+    """运行回归测试，验证编码、HTML报告等修复"""
+    try:
+        from .regression_test import run_regression_tests
+        run_regression_tests()
     except Exception as e:
         CliErrorHandler.handle_error(e)
 

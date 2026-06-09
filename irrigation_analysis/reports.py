@@ -4,6 +4,7 @@
 """
 import json
 import csv
+import html
 from datetime import datetime
 from collections import defaultdict
 from typing import Dict, List, Optional, Any
@@ -25,13 +26,20 @@ class ReportGenerator:
         'UNKNOWN_PARCEL': ('未知地块', '样例数据中预期1条', '地块编号未在台账中登记'),
         'MISSING_PARCEL_ID': ('缺少地块编号', '样例数据中预期1条', '记录缺少地块编号'),
         'INVALID_DATE': ('日期格式错误', '样例数据中预期1条', '日期格式无法解析'),
-        'READING_CONFLICT': ('读数冲突', '样例数据中预期1条', '同一时刻读数不一致'),
+        'READING_CONFLICT': ('读数冲突', '样例数据中预期1条', '同一时间读数不一致'),
         'INVALID_REFERENCE': ('引用不存在地块', '样例数据中预期1-2条', '引用了不存在的地块编号'),
     }
 
     def __init__(self):
         self.output_dir = OUTPUT_DIR
         self.output_dir.mkdir(exist_ok=True)
+
+    @staticmethod
+    def _escape(text: Any) -> str:
+        """安全转义HTML特殊字符"""
+        if text is None:
+            return ''
+        return html.escape(str(text), quote=True)
 
     def _get_cached_report(self, report_type: str, report_key: str) -> Optional[Dict]:
         """获取缓存的报告"""
@@ -317,6 +325,7 @@ class ReportGenerator:
 
     def _render_html(self, summary: Dict, detailed: Dict) -> str:
         """渲染HTML报告"""
+        e = self._escape
         severity_colors = {
             'high': '#dc3545',
             'medium': '#ffc107',
@@ -327,6 +336,7 @@ class ReportGenerator:
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>农田灌溉用水异常分析报告</title>
     <style>
@@ -361,48 +371,48 @@ class ReportGenerator:
 </head>
 <body>
     <div class="container">
-        <h1>🌾 农田灌溉用水异常分析报告</h1>
+        <h1>农田灌溉用水异常分析报告</h1>
 
         <div class="info-bar">
             <div class="info-item">
                 <div class="info-label">生成时间</div>
-                <div class="info-value">{summary['generated_at']}</div>
+                <div class="info-value">{e(summary['generated_at'])}</div>
             </div>
             <div class="info-item">
                 <div class="info-label">规则版本</div>
-                <div class="info-value">{summary['rule_version']}</div>
+                <div class="info-value">{e(summary['rule_version'])}</div>
             </div>
         </div>
 
-        <h2>📊 总体汇总</h2>
+        <h2>总体汇总</h2>
         <div class="summary-cards">
             <div class="card">
-                <div class="card-value">{summary['summary']['total_anomalies']}</div>
+                <div class="card-value">{e(summary['summary']['total_anomalies'])}</div>
                 <div class="card-label">异常总数</div>
             </div>
             <div class="card">
-                <div class="card-value">{summary['summary']['total_batches']}</div>
+                <div class="card-value">{e(summary['summary']['total_batches'])}</div>
                 <div class="card-label">有效批次</div>
             </div>
             <div class="card">
-                <div class="card-value">{summary['summary']['rolled_back_batches']}</div>
+                <div class="card-value">{e(summary['summary']['rolled_back_batches'])}</div>
                 <div class="card-label">已回滚批次</div>
             </div>
             <div class="card">
-                <div class="card-value">{summary['summary']['review_status']['reviewed']}</div>
+                <div class="card-value">{e(summary['summary']['review_status']['reviewed'])}</div>
                 <div class="card-label">已复核</div>
             </div>
             <div class="card">
-                <div class="card-value">{summary['summary']['review_status']['not_reviewed']}</div>
+                <div class="card-value">{e(summary['summary']['review_status']['not_reviewed'])}</div>
                 <div class="card-label">待复核</div>
             </div>
             <div class="card">
-                <div class="card-value">{summary['summary']['review_status']['false_positive']}</div>
+                <div class="card-value">{e(summary['summary']['review_status']['false_positive'])}</div>
                 <div class="card-label">误报数</div>
             </div>
         </div>
 
-        <h2>📈 按异常类型汇总</h2>
+        <h2>按异常类型汇总</h2>
         <table>
             <tr>
                 <th>异常代码</th>
@@ -413,21 +423,21 @@ class ReportGenerator:
             </tr>
             {''.join(f'''
             <tr>
-                <td><code>{item['code']}</code></td>
-                <td><strong>{item['name']}</strong></td>
-                <td style="font-size: 20px; font-weight: bold; color: #e74c3c;">{item['count']}</td>
-                <td>{item['expected']}</td>
-                <td>{item['description']}</td>
+                <td><code>{e(item['code'])}</code></td>
+                <td><strong>{e(item['name'])}</strong></td>
+                <td style="font-size: 20px; font-weight: bold; color: #e74c3c;">{e(item['count'])}</td>
+                <td>{e(item['expected'])}</td>
+                <td>{e(item['description'])}</td>
             </tr>
             ''' for item in summary['by_type'])}
         </table>
 
         <div class="expected-note">
-            <strong>📝 样例数据说明：</strong> 本工具内置的样例数据包含所有9种异常类型的可复现场景。
+            <strong>样例数据说明：</strong> 本工具内置的样例数据包含所有9种异常类型的可复现场景。
             上表中"样例预期"列为使用样例数据时的预期异常数量范围。
         </div>
 
-        <h2>📍 按地块汇总</h2>
+        <h2>按地块汇总</h2>
         <table>
             <tr>
                 <th>地块编号</th>
@@ -436,14 +446,14 @@ class ReportGenerator:
             </tr>
             {''.join(f'''
             <tr>
-                <td><code>{item['parcel_id']}</code></td>
-                <td>{item['parcel_name']}</td>
-                <td style="font-weight: bold;">{item['count']}</td>
+                <td><code>{e(item['parcel_id'])}</code></td>
+                <td>{e(item['parcel_name'])}</td>
+                <td style="font-weight: bold;">{e(item['count'])}</td>
             </tr>
             ''' for item in summary['by_parcel'])}
         </table>
 
-        <h2>📋 按规则版本汇总</h2>
+        <h2>按规则版本汇总</h2>
         <table>
             <tr>
                 <th>规则版本</th>
@@ -451,13 +461,13 @@ class ReportGenerator:
             </tr>
             {''.join(f'''
             <tr>
-                <td><code>{item['rule_version']}</code></td>
-                <td style="font-weight: bold;">{item['count']}</td>
+                <td><code>{e(item['rule_version'])}</code></td>
+                <td style="font-weight: bold;">{e(item['count'])}</td>
             </tr>
             ''' for item in summary['by_rule_version'])}
         </table>
 
-        <h2>🔍 异常明细</h2>
+        <h2>异常明细</h2>
         <table>
             <tr>
                 <th>ID</th>
@@ -473,7 +483,7 @@ class ReportGenerator:
             {''.join(self._render_anomaly_row(a, severity_colors) for a in detailed['anomalies'])}
         </table>
 
-        <h2>📄 详细信息</h2>
+        <h2>详细信息</h2>
         {''.join(self._render_anomaly_detail(a) for a in detailed['anomalies'])}
     </div>
 </body>
@@ -482,6 +492,7 @@ class ReportGenerator:
 
     def _render_anomaly_row(self, a: Dict, severity_colors: Dict) -> str:
         """渲染异常表格行"""
+        e = self._escape
         severity_class = f'severity-{a["severity"]}'
         severity_name = {'high': '高', 'medium': '中', 'low': '低'}.get(a['severity'], a['severity'])
 
@@ -495,42 +506,52 @@ class ReportGenerator:
         else:
             status_badge = '<span class="badge badge-pending">待复核</span>'
 
+        parcel_display = e(a.get('parcel_name', '') or a.get('parcel_id', '-'))
+        description = e(a['description'])
+        if len(description) > 60:
+            description = description[:57] + '...'
+
         return f'''
             <tr>
-                <td>{a['id']}</td>
-                <td><strong>{a['anomaly_type']}</strong><br><small style="color: #999;">{a['anomaly_code']}</small></td>
-                <td>{a.get('parcel_name', '') or a.get('parcel_id', '-')}</td>
-                <td class="{severity_class}">{severity_name}</td>
-                <td><code>{a['rule_version']}</code></td>
-                <td><code>{a.get('batch_no', '-')}</code></td>
-                <td><small>{a.get('detected_at', '-')}</small></td>
+                <td>{e(a['id'])}</td>
+                <td><strong>{e(a['anomaly_type'])}</strong><br><small style="color: #999;">{e(a['anomaly_code'])}</small></td>
+                <td>{parcel_display}</td>
+                <td class="{severity_class}">{e(severity_name)}</td>
+                <td><code>{e(a['rule_version'])}</code></td>
+                <td><code>{e(a.get('batch_no', '-'))}</code></td>
+                <td><small>{e(a.get('detected_at', '-'))}</small></td>
                 <td>{status_badge}</td>
-                <td style="max-width: 300px;">{a['description']}</td>
+                <td style="max-width: 300px;">{description}</td>
             </tr>
         '''
 
     def _render_anomaly_detail(self, a: Dict) -> str:
         """渲染异常详情"""
+        e = self._escape
         import json
-        extra_str = json.dumps(a.get('extra_data', {}), ensure_ascii=False, indent=2)
+        extra_str = e(json.dumps(a.get('extra_data', {}), ensure_ascii=False, indent=2))
 
-        review_section = ''
+        parcel_name = e(a.get('parcel_name', '') or a.get('parcel_id', '-'))
+        parcel_id = e(a.get('parcel_id', '-'))
+        description = e(a['description'])
+
+        review_parts = []
         if a['is_reviewed']:
-            review_section = f'''
-            <p><strong>复核结果：</strong>{a.get('review_result', '')}</p>
-            <p><strong>是否误报：</strong>{'是' if a.get('is_false_positive') else '否'}</p>
-            {f'<p><strong>复核备注：</strong>{a.get("review_comment", "")}</p>' if a.get('review_comment') else ''}
-            '''
+            review_parts.append(f'<p><strong>复核结果：</strong>{e(a.get("review_result", ""))}</p>')
+            review_parts.append(f'<p><strong>是否误报：</strong>{"是" if a.get("is_false_positive") else "否"}</p>')
+            if a.get('review_comment'):
+                review_parts.append(f'<p><strong>复核备注：</strong>{e(a.get("review_comment", ""))}</p>')
+        review_section = '\n'.join(review_parts)
 
         return f'''
         <div class="detail-row" style="padding: 15px; margin: 10px 0; border-radius: 5px;">
-            <h3>#{a['id']} {a['anomaly_type']} <small style="color: #999;">({a['anomaly_code']})</small></h3>
-            <p><strong>描述：</strong>{a['description']}</p>
-            <p><strong>地块：</strong>{a.get('parcel_name', '') or a.get('parcel_id', '-')} ({a.get('parcel_id', '-')})</p>
-            <p><strong>严重程度：</strong>{a['severity']}</p>
-            <p><strong>检测时间：</strong>{a.get('detected_at', '-')}</p>
-            <p><strong>规则版本：</strong>{a['rule_version']}</p>
-            <p><strong>批次号：</strong>{a.get('batch_no', '-')}</p>
+            <h3>#{e(a['id'])} {e(a['anomaly_type'])} <small style="color: #999;">({e(a['anomaly_code'])})</small></h3>
+            <p><strong>描述：</strong>{description}</p>
+            <p><strong>地块：</strong>{parcel_name} ({parcel_id})</p>
+            <p><strong>严重程度：</strong>{e(a['severity'])}</p>
+            <p><strong>检测时间：</strong>{e(a.get('detected_at', '-'))}</p>
+            <p><strong>规则版本：</strong>{e(a['rule_version'])}</p>
+            <p><strong>批次号：</strong>{e(a.get('batch_no', '-'))}</p>
             {review_section}
             <details>
                 <summary>查看扩展数据</summary>

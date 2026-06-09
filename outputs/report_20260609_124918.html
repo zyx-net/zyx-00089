@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>农田灌溉用水异常分析报告</title>
     <style>
@@ -36,12 +37,12 @@
 </head>
 <body>
     <div class="container">
-        <h1>🌾 农田灌溉用水异常分析报告</h1>
+        <h1>农田灌溉用水异常分析报告</h1>
 
         <div class="info-bar">
             <div class="info-item">
                 <div class="info-label">生成时间</div>
-                <div class="info-value">2026-06-09T09:57:54.246102</div>
+                <div class="info-value">2026-06-09T12:49:18.826638</div>
             </div>
             <div class="info-item">
                 <div class="info-label">规则版本</div>
@@ -49,14 +50,14 @@
             </div>
         </div>
 
-        <h2>📊 总体汇总</h2>
+        <h2>总体汇总</h2>
         <div class="summary-cards">
             <div class="card">
                 <div class="card-value">2</div>
                 <div class="card-label">异常总数</div>
             </div>
             <div class="card">
-                <div class="card-value">3</div>
+                <div class="card-value">4</div>
                 <div class="card-label">有效批次</div>
             </div>
             <div class="card">
@@ -77,7 +78,7 @@
             </div>
         </div>
 
-        <h2>📈 按异常类型汇总</h2>
+        <h2>按异常类型汇总</h2>
         <table>
             <tr>
                 <th>异常代码</th>
@@ -106,11 +107,11 @@
         </table>
 
         <div class="expected-note">
-            <strong>📝 样例数据说明：</strong> 本工具内置的样例数据包含所有9种异常类型的可复现场景。
+            <strong>样例数据说明：</strong> 本工具内置的样例数据包含所有9种异常类型的可复现场景。
             上表中"样例预期"列为使用样例数据时的预期异常数量范围。
         </div>
 
-        <h2>📍 按地块汇总</h2>
+        <h2>按地块汇总</h2>
         <table>
             <tr>
                 <th>地块编号</th>
@@ -126,7 +127,7 @@
             
         </table>
 
-        <h2>📋 按规则版本汇总</h2>
+        <h2>按规则版本汇总</h2>
         <table>
             <tr>
                 <th>规则版本</th>
@@ -140,7 +141,7 @@
             
         </table>
 
-        <h2>🔍 异常明细</h2>
+        <h2>异常明细</h2>
         <table>
             <tr>
                 <th>ID</th>
@@ -160,10 +161,10 @@
                 <td>P888</td>
                 <td class="severity-high">高</td>
                 <td><code>1.0.0</code></td>
-                <td><code>BATCH202606090957547CA5</code></td>
-                <td><small>2026-06-09T09:57:54.181411</small></td>
+                <td><code>BATCH20260609124827C59F</code></td>
+                <td><small>2026-06-09T12:48:27.836869</small></td>
                 <td><span class="badge badge-pending">待复核</span></td>
-                <td style="max-width: 300px;">引用不存在的地块 'P888'</td>
+                <td style="max-width: 300px;">引用不存在的地块 &#x27;P888&#x27;</td>
             </tr>
         
             <tr>
@@ -172,48 +173,48 @@
                 <td>P888</td>
                 <td class="severity-high">高</td>
                 <td><code>1.0.0</code></td>
-                <td><code>BATCH202606090957547CA5</code></td>
-                <td><small>2026-06-09T09:57:54.177757</small></td>
+                <td><code>BATCH20260609124827C59F</code></td>
+                <td><small>2026-06-09T12:48:27.834366</small></td>
                 <td><span class="badge badge-pending">待复核</span></td>
-                <td style="max-width: 300px;">未知地块 'P888'，该地块编号未在地块台账中登记</td>
+                <td style="max-width: 300px;">未知地块 &#x27;P888&#x27;，该地块编号未在地块台账中登记</td>
             </tr>
         
         </table>
 
-        <h2>📄 详细信息</h2>
+        <h2>详细信息</h2>
         
         <div class="detail-row" style="padding: 15px; margin: 10px 0; border-radius: 5px;">
             <h3>#4 引用不存在地块 <small style="color: #999;">(INVALID_REFERENCE)</small></h3>
-            <p><strong>描述：</strong>引用不存在的地块 'P888'</p>
+            <p><strong>描述：</strong>引用不存在的地块 &#x27;P888&#x27;</p>
             <p><strong>地块：</strong>P888 (P888)</p>
             <p><strong>严重程度：</strong>high</p>
-            <p><strong>检测时间：</strong>2026-06-09T09:57:54.181411</p>
+            <p><strong>检测时间：</strong>2026-06-09T12:48:27.836869</p>
             <p><strong>规则版本：</strong>1.0.0</p>
-            <p><strong>批次号：</strong>BATCH202606090957547CA5</p>
+            <p><strong>批次号：</strong>BATCH20260609124827C59F</p>
             
             <details>
                 <summary>查看扩展数据</summary>
                 <pre>{
-  "source_row": 8,
-  "parcel_id": "P888"
+  &quot;source_row&quot;: 8,
+  &quot;parcel_id&quot;: &quot;P888&quot;
 }</pre>
             </details>
         </div>
         
         <div class="detail-row" style="padding: 15px; margin: 10px 0; border-radius: 5px;">
             <h3>#1 未知地块 <small style="color: #999;">(UNKNOWN_PARCEL)</small></h3>
-            <p><strong>描述：</strong>未知地块 'P888'，该地块编号未在地块台账中登记</p>
+            <p><strong>描述：</strong>未知地块 &#x27;P888&#x27;，该地块编号未在地块台账中登记</p>
             <p><strong>地块：</strong>P888 (P888)</p>
             <p><strong>严重程度：</strong>high</p>
-            <p><strong>检测时间：</strong>2026-06-09T09:57:54.177757</p>
+            <p><strong>检测时间：</strong>2026-06-09T12:48:27.834366</p>
             <p><strong>规则版本：</strong>1.0.0</p>
-            <p><strong>批次号：</strong>BATCH202606090957547CA5</p>
+            <p><strong>批次号：</strong>BATCH20260609124827C59F</p>
             
             <details>
                 <summary>查看扩展数据</summary>
                 <pre>{
-  "source_row": 8,
-  "parcel_id": "P888"
+  &quot;source_row&quot;: 8,
+  &quot;parcel_id&quot;: &quot;P888&quot;
 }</pre>
             </details>
         </div>
