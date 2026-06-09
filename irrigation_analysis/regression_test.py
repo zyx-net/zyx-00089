@@ -47,6 +47,11 @@ class RegressionTest:
             self._test_9_html_tags_integrity()
             self._test_10_full_pipeline_import_detect_anomalies()
             self._test_11_import_all_behavior()
+            self._test_12_threshold_scheme_create()
+            self._test_13_threshold_scheme_enable()
+            self._test_14_threshold_scheme_export_import()
+            self._test_15_threshold_scheme_import_conflict()
+            self._test_16_threshold_scheme_persistence()
 
         except Exception as e:
             self._add_result('测试执行异常', False, str(e))
@@ -597,6 +602,348 @@ class RegressionTest:
 
         except Exception as e:
             self._add_result('import-all行为核对', False, str(e))
+
+    def _test_12_threshold_scheme_create(self):
+        """测试12: 阈值方案创建"""
+        print('\n--- 测试12: 阈值方案创建 ---')
+
+        import time
+        import gc
+        gc.collect()
+        time.sleep(0.5)
+
+        if self.db_path.exists():
+            try:
+                self.db_path.unlink()
+            except Exception as e:
+                print(f'⚠️  无法删除数据库: {e}')
+
+        code, stdout, stderr = self._run_command(['init'])
+        if code != 0:
+            self._add_result('阈值方案创建', False,
+                           f'初始化失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        scheme_name = f'测试方案_{int(time.time())}'
+
+        self._run_command(['threshold', 'delete', scheme_name, '--force'])
+
+        code, stdout, stderr = self._run_command([
+            'threshold', 'create',
+            '--name', scheme_name,
+            '--meter-backward', '0.02',
+            '--over-plan-ratio', '1.5',
+            '--missing-reading-days', '0.5',
+            '--description', '测试用阈值方案',
+            '--by', '测试员'
+        ])
+
+        if code != 0:
+            self._add_result('阈值方案创建', False,
+                           f'创建失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        if '方案创建成功' not in stdout:
+            self._add_result('阈值方案创建', False,
+                           f'输出中未找到"方案创建成功". stdout={stdout}')
+            return
+
+        code, stdout, stderr = self._run_command(['threshold', 'list'])
+        if code != 0:
+            self._add_result('阈值方案创建', False,
+                           f'列表查询失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        if scheme_name not in stdout:
+            self._add_result('阈值方案创建', False,
+                           f'列表中未找到新创建的方案. stdout={stdout}')
+            return
+
+        self._test12_scheme_name = scheme_name
+        self._add_result('阈值方案创建', True)
+
+    def _test_13_threshold_scheme_enable(self):
+        """测试13: 阈值方案启用"""
+        print('\n--- 测试13: 阈值方案启用 ---')
+
+        scheme_name = getattr(self, '_test12_scheme_name', 'default')
+        if scheme_name == 'default':
+            self._add_result('阈值方案启用', False, '未找到测试12创建的方案')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'threshold', 'enable', scheme_name, '--by', '管理员'
+        ])
+
+        if code != 0:
+            self._add_result('阈值方案启用', False,
+                           f'启用失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        if '方案已启用' not in stdout:
+            self._add_result('阈值方案启用', False,
+                           f'输出中未找到"方案已启用". stdout={stdout}')
+            return
+
+        code, stdout, stderr = self._run_command(['threshold', 'list'])
+        if code != 0:
+            self._add_result('阈值方案启用', False,
+                           f'列表查询失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        lines = stdout.split('\n')
+        found_active = False
+        for line in lines:
+            if scheme_name in line and '✓ 启用' in line:
+                found_active = True
+                break
+
+        if not found_active:
+            self._add_result('阈值方案启用', False,
+                           f'方案未显示为启用状态. stdout={stdout}')
+            return
+
+        self._add_result('阈值方案启用', True)
+
+    def _test_14_threshold_scheme_export_import(self):
+        """测试14: 阈值方案导出再导入"""
+        print('\n--- 测试14: 阈值方案导出再导入 ---')
+
+        import time
+        export_path = self.output_dir / f'test_export_{int(time.time())}.json'
+
+        scheme_name = getattr(self, '_test12_scheme_name', 'default')
+        if scheme_name == 'default':
+            self._add_result('阈值方案导出再导入', False, '未找到测试12创建的方案')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'threshold', 'export', scheme_name, '--output', str(export_path)
+        ])
+
+        if code != 0:
+            self._add_result('阈值方案导出再导入', False, f'导出失败: {stderr}')
+            return
+
+        if not export_path.exists():
+            self._add_result('阈值方案导出再导入', False, '导出文件不存在')
+            return
+
+        try:
+            with open(export_path, 'r', encoding='utf-8') as f:
+                import json
+                data = json.load(f)
+            if data['scheme']['name'] != scheme_name:
+                self._add_result('阈值方案导出再导入', False,
+                               f'导出文件内容不正确，期望名称={scheme_name}')
+                return
+        except Exception as e:
+            self._add_result('阈值方案导出再导入', False, f'读取导出文件失败: {e}')
+            return
+
+        import_name = f'导入测试方案_{int(time.time())}'
+        code, stdout, stderr = self._run_command([
+            'threshold', 'import', str(export_path),
+            '--rename', import_name, '--by', '导入员'
+        ])
+
+        if code != 0:
+            self._add_result('阈值方案导出再导入', False,
+                           f'导入失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        if '方案导入成功' not in stdout:
+            self._add_result('阈值方案导出再导入', False,
+                           f'输出中未找到"方案导入成功". stdout={stdout}')
+            return
+
+        code, stdout, stderr = self._run_command(['threshold', 'list'])
+        if code != 0:
+            self._add_result('阈值方案导出再导入', False,
+                           f'列表查询失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        if import_name not in stdout:
+            self._add_result('阈值方案导出再导入', False,
+                           f'列表中未找到导入的方案 {import_name}. stdout={stdout}')
+            return
+
+        try:
+            export_path.unlink()
+        except:
+            pass
+
+        self._test14_export_path = export_path
+        self._test14_import_name = import_name
+        self._add_result('阈值方案导出再导入', True)
+
+    def _test_15_threshold_scheme_import_conflict(self):
+        """测试15: 阈值方案导入冲突处理"""
+        print('\n--- 测试15: 阈值方案导入冲突处理 ---')
+
+        import time
+        scheme_name = getattr(self, '_test12_scheme_name', None)
+        if not scheme_name:
+            self._add_result('阈值方案导入冲突处理', False, '未找到测试12创建的方案')
+            return
+
+        export_path = self.output_dir / f'test_conflict_{int(time.time())}.json'
+
+        code, stdout, stderr = self._run_command([
+            'threshold', 'export', scheme_name, '--output', str(export_path)
+        ])
+
+        if code != 0:
+            self._add_result('阈值方案导入冲突处理', False,
+                           f'导出失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'threshold', 'import', str(export_path),
+            '--rename', scheme_name
+        ])
+
+        if code == 0:
+            self._add_result('阈值方案导入冲突处理', False,
+                           '同名方案导入应该失败但成功了')
+            return
+
+        if '方案名称冲突' not in stderr and '方案名称冲突' not in stdout:
+            self._add_result('阈值方案导入冲突处理', False,
+                           f'错误信息中未找到"方案名称冲突"。stdout: {stdout}, stderr: {stderr}')
+            return
+
+        overwrite_name = f'待覆盖方案_{int(time.time())}'
+        code, stdout, stderr = self._run_command([
+            'threshold', 'create',
+            '--name', overwrite_name,
+            '--meter-backward', '0.01',
+            '--over-plan-ratio', '1.2',
+            '--missing-reading-days', '1.0'
+        ])
+
+        if code != 0:
+            self._add_result('阈值方案导入冲突处理', False,
+                           f'创建待覆盖方案失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'threshold', 'import', str(export_path),
+            '--rename', overwrite_name, '--overwrite'
+        ])
+
+        if code != 0:
+            self._add_result('阈值方案导入冲突处理', False,
+                           f'覆盖导入失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        if '方案覆盖成功' not in stdout and '方案导入成功' not in stdout:
+            self._add_result('阈值方案导入冲突处理', False,
+                           f'覆盖导入输出不正确. stdout={stdout}')
+            return
+
+        try:
+            export_path.unlink()
+        except:
+            pass
+
+        self._add_result('阈值方案导入冲突处理', True)
+
+    def _test_16_threshold_scheme_persistence(self):
+        """测试16: 阈值方案跨重启生效"""
+        print('\n--- 测试16: 阈值方案跨重启生效 ---')
+
+        import time
+        scheme_name = f'持久化测试_{int(time.time())}'
+
+        self._run_command(['threshold', 'delete', scheme_name, '--force'])
+
+        code, stdout, stderr = self._run_command([
+            'threshold', 'create',
+            '--name', scheme_name,
+            '--meter-backward', '0.03',
+            '--over-plan-ratio', '1.8',
+            '--missing-reading-days', '2.0',
+            '--by', '持久化测试'
+        ])
+
+        if code != 0:
+            self._add_result('阈值方案跨重启生效', False,
+                           f'创建方案失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        code, stdout, stderr = self._run_command([
+            'threshold', 'enable', scheme_name
+        ])
+
+        if code != 0:
+            self._add_result('阈值方案跨重启生效', False,
+                           f'启用方案失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        import subprocess
+        verify_script = self.project_dir / 'verify_persistence.py'
+        verify_script.write_text(f"""
+import sys
+sys.path.insert(0, '.')
+from irrigation_analysis.threshold_manager import get_threshold_manager
+
+manager = get_threshold_manager()
+active = manager.get_active_scheme()
+
+if active['name'] != '{scheme_name}':
+    print(f'FAIL: 期望方案是{scheme_name}，实际是 {{active["name"]}}')
+    sys.exit(1)
+if active['over_plan_ratio'] != 1.8:
+    print(f'FAIL: 期望超计划比例是1.8，实际是 {{active["over_plan_ratio"]}}')
+    sys.exit(1)
+if active['meter_backward_tolerance'] != 0.03:
+    print(f'FAIL: 期望容差是0.03，实际是 {{active["meter_backward_tolerance"]}}')
+    sys.exit(1)
+if active['missing_reading_days'] != 2.0:
+    print(f'FAIL: 期望漏读天数是2.0，实际是 {{active["missing_reading_days"]}}')
+    sys.exit(1)
+
+print('PASS: 跨重启生效验证通过')
+""", encoding='utf-8')
+
+        try:
+            result = subprocess.run(
+                [sys.executable, str(verify_script)],
+                cwd=str(self.project_dir),
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                timeout=60
+            )
+
+            if result.returncode != 0:
+                self._add_result('阈值方案跨重启生效', False,
+                               f'跨进程验证失败: {result.stdout} {result.stderr}')
+                return
+
+            if 'PASS' not in result.stdout:
+                self._add_result('阈值方案跨重启生效', False,
+                               f'验证输出不正确: {result.stdout}')
+                return
+        finally:
+            try:
+                verify_script.unlink()
+            except:
+                pass
+
+        code, stdout, stderr = self._run_command(['threshold', 'logs', '--limit', '10'])
+        if code != 0:
+            self._add_result('阈值方案跨重启生效', False,
+                           f'日志查询失败. stdout={stdout}, stderr={stderr}')
+            return
+
+        if '创建' not in stdout or '启用' not in stdout:
+            self._add_result('阈值方案跨重启生效', False,
+                           f'操作日志不完整. stdout={stdout}')
+            return
+
+        self._add_result('阈值方案跨重启生效', True)
 
     def _print_summary(self):
         """打印测试摘要"""

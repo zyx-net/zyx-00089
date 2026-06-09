@@ -14,6 +14,7 @@ from .models import (
     Batch, Anomaly, MeterReading, IrrigationPlan, Parcel,
     WeatherRecord, RawRow
 )
+from .threshold_manager import threshold_manager
 
 
 class AnomalyResult:
@@ -38,7 +39,10 @@ class RuleEngine:
 
     def __init__(self):
         self.rule_version = RULE_VERSION
-        self.thresholds = THRESHOLDS
+        active_thresholds = threshold_manager.get_active_thresholds()
+        self.thresholds = active_thresholds
+        self.threshold_scheme_id = active_thresholds['scheme_id']
+        self.threshold_scheme_name = active_thresholds['scheme_name']
 
     def detect_all(self, batch_id: int = None, parcel_id: str = None,
                    start_date: date = None, end_date: date = None) -> List[Dict]:
@@ -173,6 +177,8 @@ class RuleEngine:
             raw_row_id=anomaly.get('raw_row_id'),
             batch_id=batch_id or anomaly.get('batch_id'),
             rule_version=self.rule_version,
+            threshold_scheme_id=self.threshold_scheme_id,
+            threshold_scheme_name=self.threshold_scheme_name,
             severity=anomaly.get('severity', 'warning'),
             extra_data=extra_data
         )
@@ -181,6 +187,8 @@ class RuleEngine:
 
         result = anomaly.copy()
         result['id'] = anomaly_obj.id
+        result['threshold_scheme_id'] = self.threshold_scheme_id
+        result['threshold_scheme_name'] = self.threshold_scheme_name
         return result
 
     def _detect_unknown_parcel(self, db, batch_id: int = None) -> List[Dict]:

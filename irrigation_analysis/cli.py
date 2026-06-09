@@ -17,6 +17,11 @@ from .batch_manager import batch_manager, review_manager, rollback_manager
 from .reports import report_generator
 from .sample_data import sample_data_generator
 from .config import EXCEPTION_TYPES
+from .threshold_manager import (
+    threshold_manager, ThresholdSchemeError,
+    ThresholdSchemeNotFoundError, ThresholdSchemeNameConflictError,
+    ThresholdSchemeValidationError, ThresholdSchemeImportError
+)
 
 
 def _fix_console_encoding() -> None:
@@ -60,6 +65,16 @@ class CliErrorHandler:
         """处理错误并输出友好信息"""
         if isinstance(e, ImportError):
             click.secho(f'❌ 导入错误: {str(e)}', fg='red', bold=True)
+        elif isinstance(e, ThresholdSchemeNotFoundError):
+            click.secho(f'❌ 方案不存在: {str(e)}', fg='red', bold=True)
+        elif isinstance(e, ThresholdSchemeNameConflictError):
+            click.secho(f'❌ 方案名称冲突: {str(e)}', fg='yellow', bold=True)
+        elif isinstance(e, ThresholdSchemeValidationError):
+            click.secho(f'❌ 验证错误: {str(e)}', fg='red', bold=True)
+        elif isinstance(e, ThresholdSchemeImportError):
+            click.secho(f'❌ 导入错误: {str(e)}', fg='red', bold=True)
+        elif isinstance(e, ThresholdSchemeError):
+            click.secho(f'❌ 阈值方案错误: {str(e)}', fg='red', bold=True)
         elif isinstance(e, ValueError):
             click.secho(f'❌ 参数错误: {str(e)}', fg='red', bold=True)
         elif isinstance(e, FileNotFoundError):
@@ -280,17 +295,18 @@ def list_anomalies(batch_id, type, reviewed, parcel_id, limit):
         )
 
         click.echo(f'🔍 异常列表 (共 {len(anomalies)} 条异常):')
-        click.echo('-' * 100)
-        click.echo(f'{"ID":>4} {"类型":<20} {"地块":<10} {"严重程度":<8} {"状态":<10} {"规则版本":<10} {"描述"}')
-        click.echo('-' * 100)
+        click.echo('-' * 120)
+        click.echo(f'{"ID":>4} {"类型":<18} {"地块":<10} {"严重":<6} {"状态":<8} {"规则":<8} {"方案":<15} {"描述"}')
+        click.echo('-' * 120)
 
         for a in anomalies:
             parcel_id = a.get('parcel_id') or '-'
             anomaly_type = a.get('anomaly_type') or '未知异常'
             severity = a.get('severity') or 'medium'
             rule_version = a.get('rule_version') or '-'
+            scheme_name = a.get('threshold_scheme_name') or '-'
             description = a.get('description') or '无描述'
-            desc = description[:50] + '...' if len(description) > 50 else description
+            desc = description[:40] + '...' if len(description) > 40 else description
 
             severity_color = {'high': 'red', 'medium': 'yellow', 'low': 'green'}
             color = severity_color.get(severity, 'yellow')
@@ -308,12 +324,15 @@ def list_anomalies(batch_id, type, reviewed, parcel_id, limit):
                 status = '待复核'
                 status_color = 'white'
 
+            scheme_display = scheme_name if len(scheme_name) <= 12 else scheme_name[:12] + '..'
+
             click.echo(f'{a["id"]:>4} ', nl=False)
-            click.secho(f'{anomaly_type:<20} ', fg=color, nl=False)
+            click.secho(f'{anomaly_type:<18} ', fg=color, nl=False)
             click.echo(f'{parcel_id:<10} ', nl=False)
-            click.secho(f'{severity:<8} ', fg=color, nl=False)
-            click.secho(f'{status:<10} ', fg=status_color, nl=False)
-            click.echo(f'{rule_version:<10} ', nl=False)
+            click.secho(f'{severity:<6} ', fg=color, nl=False)
+            click.secho(f'{status:<8} ', fg=status_color, nl=False)
+            click.echo(f'{rule_version:<8} ', nl=False)
+            click.secho(f'{scheme_display:<15} ', fg='cyan', nl=False)
             click.echo(desc)
 
     except Exception as e:
@@ -467,6 +486,15 @@ def show_summary():
         click.echo('=' * 60)
         click.echo(f'生成时间: {summary["generated_at"]}')
         click.echo(f'规则版本: {summary["rule_version"]}')
+
+        scheme = summary.get('active_threshold_scheme', {})
+        click.echo()
+        click.secho('🎛️  当前阈值方案:', fg='cyan', bold=True)
+        click.echo(f'  方案名称: {scheme.get("name", "-")}')
+        click.echo(f'  水表倒退容差: {scheme.get("meter_backward_tolerance", "-")}')
+        click.echo(f'  超计划比例: {scheme.get("over_plan_ratio", "-")}')
+        click.echo(f'  漏读天数: {scheme.get("missing_reading_days", "-")} (约 {scheme.get("missing_reading_hours", "-")} 小时)')
+
         click.echo('-' * 60)
 
         s = summary['summary']
@@ -495,6 +523,12 @@ def show_summary():
         click.echo('按规则版本统计:')
         for item in summary['by_rule_version']:
             click.echo(f'  版本 {item["rule_version"]}: {item["count"]} 条')
+
+        if summary.get('by_threshold_scheme'):
+            click.echo()
+            click.echo('按阈值方案统计:')
+            for item in summary['by_threshold_scheme']:
+                click.echo(f'  {item["threshold_scheme_name"]:<15}: {item["count"]:>3} 条')
 
     except Exception as e:
         CliErrorHandler.handle_error(e)
@@ -581,6 +615,297 @@ def show_exception_types():
             'INVALID_REFERENCE': '引用了不存在的地块编号',
         }.get(code, '')
         click.echo(f'  {code:<20} {name:<15} {desc}')
+
+
+@cli.group(help='🎛️  阈值方案管理')
+def threshold():
+    """阈值方案管理命令组"""
+    pass
+
+
+@threshold.command('list', help='列出所有阈值方案')
+@click.option('--active-only', is_flag=True, help='只显示启用的方案')
+def list_schemes(active_only):
+    """列出所有阈值方案"""
+    try:
+        schemes = threshold_manager.list_schemes(include_inactive=not active_only)
+
+        active = threshold_manager.get_active_scheme()
+        click.echo(f'🎛️  阈值方案列表 (共 {len(schemes)} 个方案)')
+        click.echo(f'当前启用: [{active["id"]}] {active["name"]}')
+        click.echo('-' * 110)
+        click.echo(f'{"ID":>4} {"状态":<6} {"名称":<20} {"倒表容差":>8} {"超计划比":>8} {"漏读天数":>8} {"创建人":<10} {"创建时间":<20}')
+        click.echo('-' * 110)
+
+        for s in schemes:
+            status = '✓ 启用' if s['is_active'] else '  停用'
+            status_color = 'green' if s['is_active'] else 'yellow'
+            click.secho(f'{s["id"]:>4} ', nl=False)
+            click.secho(f'{status:<6} ', fg=status_color, nl=False)
+            click.secho(f'{s["name"]:<20} ', nl=False)
+            click.echo(f'{s["meter_backward_tolerance"]:>8.4f} {s["over_plan_ratio"]:>8.2f} {s["missing_reading_days"]:>8.2f} {s["created_by"]:<10} {s["created_at"][:19] if s["created_at"] else "":<20}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@threshold.command('create', help='创建新阈值方案')
+@click.option('--name', '-n', required=True, help='方案名称')
+@click.option('--meter-backward', '-b', type=float, default=0.01, help='水表倒退容差，默认0.01')
+@click.option('--over-plan-ratio', '-r', type=float, default=1.2, help='超计划比例，默认1.2')
+@click.option('--missing-reading-days', '-d', type=float, default=1.0, help='漏读天数，默认1.0')
+@click.option('--description', '-D', default='', help='方案描述')
+@click.option('--by', '-u', default='cli', help='创建人')
+def create_scheme(name, meter_backward, over_plan_ratio, missing_reading_days, description, by):
+    """创建新阈值方案"""
+    try:
+        click.echo(f'📝 正在创建阈值方案 "{name}"...')
+
+        scheme = threshold_manager.create_scheme(
+            name=name,
+            meter_backward_tolerance=meter_backward,
+            over_plan_ratio=over_plan_ratio,
+            missing_reading_days=missing_reading_days,
+            description=description,
+            created_by=by
+        )
+
+        click.secho(f'✅ 方案创建成功', fg='green', bold=True)
+        click.echo(f'  方案ID: {scheme["id"]}')
+        click.echo(f'  方案名称: {scheme["name"]}')
+        click.echo(f'  水表倒退容差: {scheme["meter_backward_tolerance"]}')
+        click.echo(f'  超计划比例: {scheme["over_plan_ratio"]}')
+        click.echo(f'  漏读天数: {scheme["missing_reading_days"]} (约 {scheme["missing_reading_hours"]} 小时)')
+        if scheme['description']:
+            click.echo(f'  描述: {scheme["description"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@threshold.command('enable', help='启用指定阈值方案')
+@click.argument('scheme', required=True)
+@click.option('--by', '-u', default='cli', help='操作人')
+def enable_scheme(scheme, by):
+    """
+    启用指定阈值方案
+
+    SCHEME: 方案ID或方案名称
+    """
+    try:
+        click.echo(f'🔄 正在启用阈值方案 "{scheme}"...')
+
+        active = threshold_manager.enable_scheme(scheme, operator=by)
+
+        click.secho(f'✅ 方案已启用', fg='green', bold=True)
+        click.echo(f'  方案ID: {active["id"]}')
+        click.echo(f'  方案名称: {active["name"]}')
+        click.echo(f'  水表倒退容差: {active["meter_backward_tolerance"]}')
+        click.echo(f'  超计划比例: {active["over_plan_ratio"]}')
+        click.echo(f'  漏读天数: {active["missing_reading_days"]} (约 {active["missing_reading_hours"]} 小时)')
+        click.secho(f'\n⚠️  提示: 新方案将在下次检测时生效，已存在的异常记录不受影响', fg='yellow')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@threshold.command('export', help='导出阈值方案为JSON')
+@click.argument('scheme', required=True)
+@click.option('--output', '-o', default=None, help='输出文件路径')
+def export_scheme(scheme, output):
+    """
+    导出阈值方案为JSON文件
+
+    SCHEME: 方案ID或方案名称
+    """
+    try:
+        click.echo(f'📤 正在导出阈值方案 "{scheme}"...')
+
+        export_data, output_path = threshold_manager.export_scheme(scheme, output_path=output)
+
+        click.secho(f'✅ 方案导出成功', fg='green', bold=True)
+        click.echo(f'  输出路径: {output_path}')
+        click.echo(f'  方案名称: {export_data["scheme"]["name"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@threshold.command('import', help='导入阈值方案')
+@click.argument('file_path', type=click.Path(exists=True, readable=True))
+@click.option('--overwrite', is_flag=True, help='覆盖同名方案')
+@click.option('--rename', '-r', default=None, help='重命名导入的方案')
+@click.option('--by', '-u', default='cli', help='操作人')
+def import_scheme(file_path, overwrite, rename, by):
+    """
+    导入阈值方案
+
+    FILE_PATH: JSON文件路径
+    """
+    try:
+        action = '覆盖' if overwrite else '导入'
+        if rename:
+            click.echo(f'📥 正在{action}阈值方案，将重命名为 "{rename}"...')
+        else:
+            click.echo(f'📥 正在{action}阈值方案...')
+
+        scheme = threshold_manager.import_scheme(
+            input_path=file_path,
+            operator=by,
+            overwrite=overwrite,
+            rename=rename
+        )
+
+        click.secho(f'✅ 方案{action}成功', fg='green', bold=True)
+        click.echo(f'  方案ID: {scheme["id"]}')
+        click.echo(f'  方案名称: {scheme["name"]}')
+        click.echo(f'  水表倒退容差: {scheme["meter_backward_tolerance"]}')
+        click.echo(f'  超计划比例: {scheme["over_plan_ratio"]}')
+        click.echo(f'  漏读天数: {scheme["missing_reading_days"]} (约 {scheme["missing_reading_hours"]} 小时)')
+        click.echo(f'  状态: {"启用" if scheme["is_active"] else "停用"}')
+        click.echo(f'  创建人: {scheme["created_by"]}')
+        if scheme['description']:
+            click.echo(f'  描述: {scheme["description"]}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@threshold.command('show', help='查看方案详情')
+@click.argument('scheme', required=True)
+def show_scheme(scheme):
+    """
+    查看方案详情
+
+    SCHEME: 方案ID或方案名称
+    """
+    try:
+        s = threshold_manager.get_scheme(scheme)
+        if not s:
+            raise ThresholdSchemeNotFoundError(f'方案不存在: {scheme}')
+
+        click.echo(f'📋 阈值方案详情')
+        click.echo('=' * 60)
+        click.echo(f'  ID: {s["id"]}')
+        click.echo(f'  名称: {s["name"]}')
+        status = '✓ 启用' if s['is_active'] else '  停用'
+        status_color = 'green' if s['is_active'] else 'yellow'
+        click.secho(f'  状态: {status}', fg=status_color)
+        click.echo(f'  水表倒退容差: {s["meter_backward_tolerance"]}')
+        click.echo(f'  超计划比例: {s["over_plan_ratio"]}')
+        click.echo(f'  漏读天数: {s["missing_reading_days"]} (约 {s["missing_reading_hours"]} 小时)')
+        click.echo(f'  创建人: {s["created_by"]}')
+        click.echo(f'  创建时间: {s["created_at"]}')
+        if s['description']:
+            click.echo(f'  描述: {s["description"]}')
+
+        if s.get('logs'):
+            click.echo(f'\n📜 最近操作日志 (最近 {len(s["logs"])} 条):')
+            click.echo('-' * 80)
+            click.echo(f'{"操作":<8} {"操作人":<10} {"时间":<20} {"详情"}')
+            click.echo('-' * 80)
+            for log in s['logs']:
+                op_name = {
+                    'create': '创建',
+                    'enable': '启用',
+                    'disable': '停用',
+                    'import': '导入',
+                    'export': '导出',
+                    'update': '更新',
+                    'delete': '删除',
+                }.get(log['operation'], log['operation'])
+                details_str = str(log['details'])[:50]
+                click.echo(f'{op_name:<8} {log["operator"]:<10} {log["created_at"][:19] if log["created_at"] else "":<20} {details_str}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@threshold.command('logs', help='查看操作日志')
+@click.option('--scheme', '-s', default=None, help='按方案过滤（ID或名称）')
+@click.option('--operation', '-o', default=None, help='按操作类型过滤')
+@click.option('--limit', '-n', default=50, help='显示数量')
+def list_logs(scheme, operation, limit):
+    """查看操作日志"""
+    try:
+        logs = threshold_manager.list_operation_logs(
+            scheme_id_or_name=scheme,
+            operation=operation,
+            limit=limit
+        )
+
+        filter_info = []
+        if scheme:
+            filter_info.append(f'方案: {scheme}')
+        if operation:
+            filter_info.append(f'操作: {operation}')
+        filter_str = f' ({", ".join(filter_info)})' if filter_info else ''
+
+        click.echo(f'📜 阈值方案操作日志{filter_str} (共 {len(logs)} 条)')
+        click.echo('-' * 100)
+        click.echo(f'{"ID":>4} {"操作":<8} {"方案":<20} {"操作人":<10} {"时间":<20} {"详情"}')
+        click.echo('-' * 100)
+
+        for log in logs:
+            op_name = {
+                'create': '创建',
+                'enable': '启用',
+                'disable': '停用',
+                'import': '导入',
+                'export': '导出',
+                'update': '更新',
+                'delete': '删除',
+            }.get(log['operation'], log['operation'])
+            op_color = {
+                'create': 'green',
+                'enable': 'cyan',
+                'disable': 'yellow',
+                'import': 'blue',
+                'export': 'magenta',
+                'update': 'yellow',
+                'delete': 'red',
+            }.get(log['operation'], 'white')
+            details_str = str(log['details'])[:40]
+            click.echo(f'{log["id"]:>4} ', nl=False)
+            click.secho(f'{op_name:<8} ', fg=op_color, nl=False)
+            click.echo(f'{log["scheme_name"]:<20} {log["operator"]:<10} {log["created_at"][:19] if log["created_at"] else "":<20} {details_str}')
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
+
+
+@threshold.command('delete', help='删除阈值方案')
+@click.argument('scheme', required=True)
+@click.option('--by', '-u', default='cli', help='操作人')
+@click.option('--force', is_flag=True, help='强制删除（不提示）')
+def delete_scheme(scheme, by, force):
+    """
+    删除阈值方案（不能删除启用的和默认的）
+
+    SCHEME: 方案ID或方案名称
+    """
+    try:
+        s = threshold_manager.get_scheme(scheme)
+        if not s:
+            raise ThresholdSchemeNotFoundError(f'方案不存在: {scheme}')
+
+        if not force:
+            click.secho(f'⚠️  您将要删除方案: [{s["id"]}] {s["name"]}', fg='yellow', bold=True)
+            click.echo(f'  水表倒退容差: {s["meter_backward_tolerance"]}')
+            click.echo(f'  超计划比例: {s["over_plan_ratio"]}')
+            click.echo(f'  漏读天数: {s["missing_reading_days"]}')
+            click.echo()
+            if not click.confirm('确定要删除此方案吗？此操作不可撤销'):
+                click.echo('已取消删除')
+                return
+
+        click.echo(f'🗑️  正在删除阈值方案 "{scheme}"...')
+        threshold_manager.delete_scheme(scheme, operator=by)
+
+        click.secho(f'✅ 方案已删除', fg='green', bold=True)
+
+    except Exception as e:
+        CliErrorHandler.handle_error(e)
 
 
 if __name__ == '__main__':

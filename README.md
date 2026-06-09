@@ -140,7 +140,7 @@ zyx-00089/
 # 运行完整验收测试（10个测试点）
 python main.py acceptance-test
 
-# 运行回归测试（9个测试点，验证编码和HTML修复）
+# 运行回归测试（16个测试点，含阈值方案管理验证）
 python main.py regression-test
 ```
 
@@ -213,6 +213,63 @@ python main.py regression-test
    # 预期：两次结果完全一致，批次、复核、回滚、报告统计保持不变
    ```
 
+8. **阈值方案管理**
+   ```bash
+   # 查看所有阈值方案
+   python main.py threshold list
+   # 预期：列出默认方案及所有自定义方案，显示当前启用状态
+
+   # 创建新的阈值方案（夏季灌溉高峰）
+   python main.py threshold create --name "夏季灌溉高峰" \
+       --meter-backward 0.02 \
+       --over-plan-ratio 1.5 \
+       --missing-reading-days 0.5 \
+       --description "夏季高温期灌溉阈值" \
+       --by "运维工程师"
+   # 预期：方案创建成功，显示方案详情
+
+   # 启用新方案
+   python main.py threshold enable "夏季灌溉高峰" --by "运维主管"
+   # 预期：方案已启用，后续检测将使用新阈值
+
+   # 查看方案详情
+   python main.py threshold show "夏季灌溉高峰"
+   # 预期：显示方案的完整配置和创建信息
+
+   # 导出方案（用于备份或跨环境迁移）
+   python main.py threshold export "夏季灌溉高峰" --output outputs/summer_scheme.json
+   # 预期：方案已导出到指定JSON文件
+
+   # 导入方案（重命名避免冲突）
+   python main.py threshold import outputs/summer_scheme.json --rename "夏季方案备份" --by "系统管理员"
+   # 预期：方案导入成功，使用新名称
+
+   # 导入冲突测试（同名不覆盖）
+   python main.py threshold import outputs/summer_scheme.json
+   # 预期：提示方案名称冲突，建议使用--rename或--overwrite
+
+   # 覆盖导入
+   python main.py threshold import outputs/summer_scheme.json --rename "夏季方案备份" --overwrite
+   # 预期：方案覆盖成功
+
+   # 查看操作日志
+   python main.py threshold logs --limit 10
+   # 预期：显示所有阈值方案的操作历史，包含操作人、时间、操作内容
+
+   # 异常列表显示当前使用的方案
+   python main.py anomalies
+   # 预期：异常列表增加"阈值方案"列，显示每条异常使用的方案名称
+
+   # 汇总统计显示阈值方案信息
+   python main.py summary
+   # 预期：显示当前启用的阈值方案，以及按方案统计的异常分布
+
+   # 重启后验证方案仍然生效
+   # 关闭程序后重新运行
+   python main.py threshold list
+   # 预期："夏季灌溉高峰"仍显示为启用状态
+   ```
+
 ## 字段映射配置
 
 系统支持以下字段名（不区分大小写）：
@@ -246,11 +303,13 @@ python main.py regression-test
 
 ## 异常检测规则
 
-| 异常代码 | 异常类型 | 检测规则 | 严重程度 |
-|---------|---------|---------|---------|
+> **注意**：以下阈值为默认值，可通过**阈值方案管理**动态调整。支持按季节、片区等场景创建多套方案，灵活切换。
+
+| 异常代码 | 异常类型 | 检测规则（默认阈值） | 严重程度 |
+|---------|---------|---------------------|---------|
 | OVER_PLAN | 超计划用水 | 实际用水量 > 计划用水量 × 120% | 高 |
 | METER_BACKWARD | 倒表 | 当前读数 < 上一次读数 - 容差(0.01) | 高 |
-| MISSING_READING | 漏采 | 两次读数间隔 > 25小时 | 中 |
+| MISSING_READING | 漏采 | 两次读数间隔 > 24小时 | 中 |
 | DUPLICATE_REPORT | 重复上报 | 同一地块同一时间读数已存在 | 中 |
 | UNKNOWN_PARCEL | 未知地块 | 地块编号未在台账中登记 | 高 |
 | MISSING_PARCEL_ID | 缺少地块编号 | 记录未提供地块编号 | 高 |
@@ -310,7 +369,7 @@ python main.py regression-test
 python main.py regression-test
 ```
 
-包含 9 个测试用例：
+包含 16 个测试用例：
 1. GBK 环境下 --help 命令
 2. GBK 环境下 init 命令
 3. 样例数据和验收测试
@@ -320,3 +379,10 @@ python main.py regression-test
 7. CSV 报告导出
 8. HTML 内容浏览器可读
 9. HTML 标签完整性
+10. 完整流程链路（导入→检测→异常列表）
+11. import-all 行为核对
+12. 阈值方案创建
+13. 阈值方案启用
+14. 阈值方案导出再导入
+15. 阈值方案导入冲突处理
+16. 阈值方案跨重启生效

@@ -195,6 +195,8 @@ class ReviewManager:
             'raw_row_id': anomaly.raw_row_id,
             'batch_id': anomaly.batch_id,
             'rule_version': anomaly.rule_version,
+            'threshold_scheme_id': anomaly.threshold_scheme_id,
+            'threshold_scheme_name': anomaly.threshold_scheme_name,
             'severity': anomaly.severity,
             'detected_at': anomaly.detected_at.isoformat() if anomaly.detected_at else None,
             'extra_data': extra_data,

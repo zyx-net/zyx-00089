@@ -13,6 +13,7 @@ from pathlib import Path
 from .config import OUTPUT_DIR, EXCEPTION_TYPES, RULE_VERSION
 from .database import get_db
 from .models import Anomaly, Batch, ReportCache, Parcel
+from .threshold_manager import threshold_manager
 
 
 class ReportGenerator:
@@ -88,6 +89,7 @@ class ReportGenerator:
             by_type = defaultdict(int)
             by_parcel = defaultdict(int)
             by_rule_version = defaultdict(int)
+            by_threshold_scheme = defaultdict(int)
             by_severity = defaultdict(int)
             by_review_status = {
                 'total': len(anomalies),
@@ -108,6 +110,8 @@ class ReportGenerator:
                 if a.parcel_id:
                     by_parcel[a.parcel_id] += 1
                 by_rule_version[a.rule_version] += 1
+                scheme_name = a.threshold_scheme_name or 'unknown'
+                by_threshold_scheme[scheme_name] += 1
                 by_severity[a.severity] += 1
 
                 if a.is_reviewed:
@@ -146,12 +150,22 @@ class ReportGenerator:
                     'count': count,
                 })
 
+            by_threshold_scheme_list = []
+            for scheme_name, count in sorted(by_threshold_scheme.items(), key=lambda x: -x[1]):
+                by_threshold_scheme_list.append({
+                    'threshold_scheme_name': scheme_name,
+                    'count': count,
+                })
+
             batch_count = db.query(Batch).filter(Batch.is_rolled_back == False).count()
             rolled_back_count = db.query(Batch).filter(Batch.is_rolled_back == True).count()
+
+            active_scheme = threshold_manager.get_active_scheme()
 
             result = {
                 'generated_at': datetime.now().isoformat(),
                 'rule_version': RULE_VERSION,
+                'active_threshold_scheme': active_scheme,
                 'summary': {
                     'total_anomalies': len(anomalies),
                     'total_batches': batch_count,
@@ -162,6 +176,7 @@ class ReportGenerator:
                 'by_type': by_type_with_names,
                 'by_parcel': by_parcel_with_names,
                 'by_rule_version': by_rule_version_list,
+                'by_threshold_scheme': by_threshold_scheme_list,
                 'expected_anomalies': self.EXPECTED_ANOMALIES,
             }
 
@@ -230,6 +245,8 @@ class ReportGenerator:
                     'parcel_name': parcel_names.get(a.parcel_id, a.parcel_id) if a.parcel_id else None,
                     'severity': a.severity,
                     'rule_version': a.rule_version,
+                    'threshold_scheme_id': a.threshold_scheme_id,
+                    'threshold_scheme_name': a.threshold_scheme_name,
                     'batch_no': batch_no,
                     'detected_at': a.detected_at.isoformat() if a.detected_at else None,
                     'is_reviewed': a.is_reviewed,
@@ -239,9 +256,12 @@ class ReportGenerator:
                     'extra_data': extra_data,
                 })
 
+            active_scheme = threshold_manager.get_active_scheme()
+
             result = {
                 'generated_at': datetime.now().isoformat(),
                 'rule_version': RULE_VERSION,
+                'active_threshold_scheme': active_scheme,
                 'filters': {
                     'batch_id': batch_id,
                     'anomaly_type': anomaly_type,
@@ -298,7 +318,7 @@ class ReportGenerator:
 
             writer.writerow([
                 '异常ID', '异常代码', '异常类型', '描述', '地块编号', '地块名称',
-                '严重程度', '规则版本', '批次号', '检测时间',
+                '严重程度', '规则版本', '阈值方案', '批次号', '检测时间',
                 '是否复核', '复核结果', '是否误报', '复核备注', '扩展信息'
             ])
 
@@ -312,6 +332,7 @@ class ReportGenerator:
                     a.get('parcel_name', ''),
                     a['severity'],
                     a['rule_version'],
+                    a.get('threshold_scheme_name', ''),
                     a.get('batch_no', ''),
                     a.get('detected_at', ''),
                     '是' if a['is_reviewed'] else '否',
@@ -332,6 +353,8 @@ class ReportGenerator:
             'low': '#28a745',
         }
 
+        active_scheme = summary.get('active_threshold_scheme', {})
+
         html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -349,6 +372,8 @@ class ReportGenerator:
         .info-item {{ display: inline-block; margin-right: 30px; }}
         .info-label {{ color: #7f8c8d; font-size: 14px; }}
         .info-value {{ font-size: 18px; font-weight: bold; color: #2c3e50; }}
+        .scheme-bar {{ background: #fff9e6; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #f39c12; }}
+        .scheme-item {{ display: inline-block; margin-right: 25px; }}
         table {{ width: 100%; border-collapse: collapse; margin: 15px 0; }}
         th {{ background: #3498db; color: white; padding: 12px; text-align: left; font-weight: normal; }}
         td {{ padding: 10px; border-bottom: 1px solid #ecf0f1; }}
@@ -381,6 +406,26 @@ class ReportGenerator:
             <div class="info-item">
                 <div class="info-label">规则版本</div>
                 <div class="info-value">{e(summary['rule_version'])}</div>
+            </div>
+        </div>
+
+        <div class="scheme-bar">
+            <strong>📋 当前阈值方案:</strong>
+            <div class="scheme-item">
+                <span class="info-label">方案名称:</span>
+                <span class="info-value">{e(active_scheme.get('name', '-'))}</span>
+            </div>
+            <div class="scheme-item">
+                <span class="info-label">水表倒退容差:</span>
+                <span class="info-value">{e(active_scheme.get('meter_backward_tolerance', '-'))}</span>
+            </div>
+            <div class="scheme-item">
+                <span class="info-label">超计划比例:</span>
+                <span class="info-value">{e(active_scheme.get('over_plan_ratio', '-'))}</span>
+            </div>
+            <div class="scheme-item">
+                <span class="info-label">漏读天数:</span>
+                <span class="info-value">{e(active_scheme.get('missing_reading_days', '-'))}</span>
             </div>
         </div>
 
@@ -467,6 +512,20 @@ class ReportGenerator:
             ''' for item in summary['by_rule_version'])}
         </table>
 
+        <h2>按阈值方案汇总</h2>
+        <table>
+            <tr>
+                <th>阈值方案</th>
+                <th>异常数量</th>
+            </tr>
+            {''.join(f'''
+            <tr>
+                <td><code>{e(item["threshold_scheme_name"])}</code></td>
+                <td style="font-weight: bold;">{e(item["count"])}</td>
+            </tr>
+            ''' for item in summary['by_threshold_scheme'])}
+        </table>
+
         <h2>异常明细</h2>
         <table>
             <tr>
@@ -475,6 +534,7 @@ class ReportGenerator:
                 <th>地块</th>
                 <th>严重程度</th>
                 <th>规则版本</th>
+                <th>阈值方案</th>
                 <th>批次号</th>
                 <th>检测时间</th>
                 <th>状态</th>
@@ -507,9 +567,10 @@ class ReportGenerator:
             status_badge = '<span class="badge badge-pending">待复核</span>'
 
         parcel_display = e(a.get('parcel_name', '') or a.get('parcel_id', '-'))
+        scheme_name = e(a.get('threshold_scheme_name', '-'))
         description = e(a['description'])
-        if len(description) > 60:
-            description = description[:57] + '...'
+        if len(description) > 50:
+            description = description[:47] + '...'
 
         return f'''
             <tr>
@@ -518,10 +579,11 @@ class ReportGenerator:
                 <td>{parcel_display}</td>
                 <td class="{severity_class}">{e(severity_name)}</td>
                 <td><code>{e(a['rule_version'])}</code></td>
+                <td><code style="color: #17a2b8;">{scheme_name}</code></td>
                 <td><code>{e(a.get('batch_no', '-'))}</code></td>
                 <td><small>{e(a.get('detected_at', '-'))}</small></td>
                 <td>{status_badge}</td>
-                <td style="max-width: 300px;">{description}</td>
+                <td style="max-width: 250px;">{description}</td>
             </tr>
         '''
 
@@ -534,6 +596,7 @@ class ReportGenerator:
         parcel_name = e(a.get('parcel_name', '') or a.get('parcel_id', '-'))
         parcel_id = e(a.get('parcel_id', '-'))
         description = e(a['description'])
+        scheme_name = e(a.get('threshold_scheme_name', '-'))
 
         review_parts = []
         if a['is_reviewed']:
@@ -551,6 +614,7 @@ class ReportGenerator:
             <p><strong>严重程度：</strong>{e(a['severity'])}</p>
             <p><strong>检测时间：</strong>{e(a.get('detected_at', '-'))}</p>
             <p><strong>规则版本：</strong>{e(a['rule_version'])}</p>
+            <p><strong>阈值方案：</strong><code style="color: #17a2b8;">{scheme_name}</code></p>
             <p><strong>批次号：</strong>{e(a.get('batch_no', '-'))}</p>
             {review_section}
             <details>

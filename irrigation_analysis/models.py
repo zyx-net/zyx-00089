@@ -154,6 +154,8 @@ class Anomaly(Base):
     raw_row_id = Column(Integer, ForeignKey('raw_rows.id'))
     batch_id = Column(Integer, ForeignKey('batches.id'), index=True)
     rule_version = Column(String(20), nullable=False)
+    threshold_scheme_id = Column(Integer, ForeignKey('threshold_schemes.id'))
+    threshold_scheme_name = Column(String(100))
     severity = Column(String(20), default='warning')
     detected_at = Column(DateTime, default=datetime.now)
     extra_data = Column(Text)
@@ -207,3 +209,36 @@ class ReportCache(Base):
     __table_args__ = (
         UniqueConstraint('report_type', 'report_key', name='_report_type_key_uc'),
     )
+
+
+class ThresholdScheme(Base):
+    """阈值方案"""
+    __tablename__ = 'threshold_schemes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    description = Column(String(500))
+    meter_backward_tolerance = Column(Float, nullable=False, default=0.01)
+    over_plan_ratio = Column(Float, nullable=False, default=1.2)
+    missing_reading_days = Column(Float, nullable=False, default=1.0)
+    is_active = Column(Boolean, default=False, index=True)
+    created_by = Column(String(50), default='system')
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    anomalies = relationship('ThresholdSchemeLog', back_populates='scheme')
+
+
+class ThresholdSchemeLog(Base):
+    """阈值方案操作日志"""
+    __tablename__ = 'threshold_scheme_logs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scheme_id = Column(Integer, ForeignKey('threshold_schemes.id'), index=True)
+    scheme_name = Column(String(100), nullable=False)
+    operation = Column(String(20), nullable=False)
+    operator = Column(String(50), default='system')
+    details = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    scheme = relationship('ThresholdScheme', back_populates='anomalies')
